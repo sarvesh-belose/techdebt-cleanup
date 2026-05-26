@@ -1,0 +1,156 @@
+spring:
+  application:
+    name: techdebt-cleanup
+  profiles:
+    active: local
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        # Dialect is auto-detected from the JDBC driver: H2Dialect locally,
+        # SQLServerDialect in prod. Setting it explicitly conflicts with H2 because
+        # SQLServerDialect's constructor probes `sys.databases` which H2 doesn't expose.
+        # Flyway scripts (MSSQL-compatible SQL) are the schema portability contract.
+        jdbc:
+          time_zone: UTC
+        type:
+          preferred_instant_jdbc_type: TIMESTAMP
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+server:
+  port: ${SERVER_PORT:9200}
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+    git:
+      mode: full
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    root: INFO
+    com.enterprise.techdebt: DEBUG
+    org.hibernate.SQL: INFO
+
+techdebt:
+  audit:
+    enabled: true
+  security:
+    dev-bypass: false
+  copilot:
+    cli-path: gh
+    timeout-seconds: 300
+  build:
+    fast-tier:
+      maven-image: maven:3.9-eclipse-temurin-17
+      mvn-args: "-o clean install -DskipITs"
+      timeout-seconds: 600
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:h2:mem:techdebt;MODE=MSSQLServer;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+techdebt:
+  security:
+    dev-bypass: true
+  secretstore:
+    impl: in-memory
+
+logging:
+  structured:
+    format:
+      console:
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: jdbc:h2:file:./data/techdebt;MODE=MSSQLServer;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    driver-class-name: org.h2.Driver
+    username: ${DB_USER:sa}
+    password: ${DB_PASSWORD:}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${AZURE_AD_ISSUER_URI:}
+          jwk-set-uri: ${AZURE_AD_JWK_SET_URI:}
+
+techdebt:
+  security:
+    dev-bypass: false
+    azure-ad:
+      tenant-id: ${AZURE_AD_TENANT_ID:}
+      client-id: ${AZURE_AD_CLIENT_ID:}
+  secretstore:
+    impl: keyvault
+    keyvault-uri: ${AZURE_KEYVAULT_URI:}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${DB_URL}
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${AZURE_AD_ISSUER_URI}
+          jwk-set-uri: ${AZURE_AD_JWK_SET_URI}
+
+techdebt:
+  security:
+    dev-bypass: false
+    azure-ad:
+      tenant-id: ${AZURE_AD_TENANT_ID}
+      client-id: ${AZURE_AD_CLIENT_ID}
+  secretstore:
+    impl: keyvault
+    keyvault-uri: ${AZURE_KEYVAULT_URI}

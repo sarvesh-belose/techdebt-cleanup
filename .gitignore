@@ -1,0 +1,55 @@
+# ─── Maven / Java ───────────────────────────────────────────────
+target/
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+.mvn/wrapper/maven-wrapper.jar
+
+# ─── Spring Boot dev data ───────────────────────────────────────
+backend/data/
+backend/logs/
+
+# ─── Node / Vite / TypeScript build artifacts ───────────────────
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Env files (may contain secrets) ────────────────────────────
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ─── IDE ────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+.vscode/
+*.code-workspace
+.project
+.classpath
+.settings/
+*.sublime-*
+nbproject/
+
+# ─── OS ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Claude / agent scratch ─────────────────────────────────────
+.claude/
+
+# ─── Workspaces created at runtime by the orchestrator ──────────
+techdebt-workspaces/
