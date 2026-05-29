@@ -1,0 +1,58 @@
+# Dev-machine bootstrap for TechDebt Cleanup.
+#
+# Copy this file to dev.config.yml (gitignored) and fill in your tokens.
+# When the backend boots in the `local` profile and this file exists with
+# techdebt.dev.bootstrap.enabled=true, DevBootstrapRunner will:
+#   1. Upsert each project below (idempotent — safe to re-run)
+#   2. Upsert each scan source's credentials through SecretStore
+#   3. Trigger an initial scan if triggerInitialScan: true
+#
+# Run setup.bat in the project root to fill this in interactively, or edit
+# it by hand. Either way, run start.bat afterwards.
+#
+# Secrets can be inline literals OR ${ENV_VAR} references (Spring resolves
+# env vars automatically). Env vars are nicer for shared dev machines.
+
+techdebt:
+  dev:
+    bootstrap:
+      enabled: true
+
+      # GitHub Copilot CLI — set to 'copilot' to enable, 'noop' to disable.
+      # Either way, you must have run `gh auth login` on this machine first.
+      copilotGenerator: noop
+
+      projects:
+        - name: payments-svc
+          repoUrl: https://dev.azure.com/acme/banking/_git/payments-svc
+          defaultBranch: main
+          description: Sample project — replace with yours
+          # Trigger a Veracode + Sonar scan on startup so the developer sees
+          # real issues immediately. Subsequent restarts re-scan (idempotent).
+          triggerInitialScan: true
+
+          scanSources:
+            # ---- Veracode SCA (CVEs in dependencies) ----
+            - source: VERACODE_SCA
+              externalProjectId: <veracode-workspace-guid>
+              apiBaseUrl: https://api.veracode.com
+              # Format: <apiId>:<apiKey>, both hex. Example:
+              #   secret: abcdef0123456789:00112233445566778899aabb
+              secret: ${VERACODE_HMAC:}
+              cronExpression: "0 0 2 * * *"   # daily 02:00 UTC
+
+            # ---- Veracode SAST (security defects in source) ----
+            - source: VERACODE_SAST
+              externalProjectId: <veracode-application-guid>
+              apiBaseUrl: https://api.veracode.com
+              secret: ${VERACODE_HMAC:}
+              cronExpression: "0 0 3 * * *"
+
+            # ---- SonarQube (issues + coverage gaps) ----
+            - source: SONARQUBE
+              externalProjectId: payments-svc
+              apiBaseUrl: https://sonar.acme.com
+              # Raw user token. Generate at <sonar>/account/security.
+              secret: ${SONAR_TOKEN:}
+              coverageThresholdPct: 80
+              cronExpression: "0 30 2 * * *"

@@ -16,16 +16,27 @@ Built for banking-domain delivery teams. Designed so the audit trail, safety gat
 
 ### Local development
 
-**Windows — one-liner via the helper scripts at the project root:**
+**Windows — one-time setup that gets a developer to real issues in two minutes:**
 
 ```cmd
-build.bat              REM full build with tests
-build.bat fast         REM skip tests
+setup.bat              REM prompts for project + Veracode/Sonar/Copilot tokens; writes dev.config.yml
+build.bat fast         REM compile backend + frontend (skip tests)
 start.bat              REM opens backend (9200) and frontend (9211) in separate windows
-stop.bat               REM kills whatever's listening on 9200 and 9211
+```
+
+After `start.bat`, open **http://localhost:9211**. The platform auto-registers the project you configured, applies the credentials, and triggers an initial scan — your real Veracode + Sonar findings appear in the inbox without any UI clicks.
+
+Day-to-day:
+
+```cmd
+start.bat              REM launch
+stop.bat               REM shut down (kills 9200 + 9211 listeners)
+build.bat              REM full build with tests
 ```
 
 `start.bat` refuses to launch if either port is already in use (points you at `stop.bat`), so the zombie-process trap doesn't bite. Each service runs in its own cmd window so logs stay visible.
+
+Skipping `setup.bat` is fine — the platform boots empty and you can register projects through the UI. See **[ONBOARDING.md](ONBOARDING.md)** for the manual path.
 
 **Manual / cross-platform:**
 
