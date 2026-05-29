@@ -1,13 +1,13 @@
-#requires -Version 5
+﻿#requires -Version 5
 <#
 .SYNOPSIS
     Interactive setup for TechDebt Cleanup. Writes dev.config.yml so the platform
     auto-registers your projects + scan sources on the next start.
 
 .PARAMETER Mode
-    'add'   — append exactly one new project to an existing dev.config.yml
+    'add'   -- append exactly one new project to an existing dev.config.yml
               (use this when joining a new team's project)
-    (none)  — fresh setup. If dev.config.yml exists, prompts Add / Overwrite / Quit.
+    (none)  -- fresh setup. If dev.config.yml exists, prompts Add / Overwrite / Quit.
 
 .DESCRIPTION
     Fresh setup loops to onboard as many projects as you want in one session.
@@ -72,12 +72,187 @@ function Banner([string]$text) {
     Write-Host ("--- {0} ---" -f $text) -ForegroundColor Cyan
 }
 
+# ─── Validation helpers ────────────────────────────────────────────────────
+
+# PowerShell 5 defaults to TLS 1.0; banking enterprises typically require 1.2+.
+[Net.ServicePointManager]::SecurityProtocol = `
+    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+function Hex-Decode([string]$hex) {
+    if ([string]::IsNullOrWhiteSpace($hex)) { return ,@() }
+    if ($hex.Length % 2 -ne 0) { throw "hex string length must be even" }
+    $bytes = New-Object byte[] ($hex.Length / 2)
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        $bytes[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
+    }
+    return ,$bytes
+}
+
+function Hex-Encode([byte[]]$bytes) {
+    ($bytes | ForEach-Object { '{0:x2}' -f $_ }) -join ''
+}
+
+function Invoke-HmacSha256([byte[]]$data, [byte[]]$key) {
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new()
+    try {
+        $hmac.Key = $key
+        return ,$hmac.ComputeHash($data)
+    } finally {
+        $hmac.Dispose()
+    }
+}
+
+# Mirror of backend's VeracodeHmacSigner - same key-derivation chain.
+function New-VeracodeHmacHeader {
+    param([string]$ApiId, [string]$ApiKey, [string]$HttpMethod, [string]$UriPath)
+    $ts    = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $rng   = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $nonceBytes = New-Object byte[] 16
+    $rng.GetBytes($nonceBytes); $rng.Dispose()
+    $nonce = Hex-Encode $nonceBytes
+
+    $data        = "$ApiId$ts$nonce$HttpMethod$UriPath"
+    $apiKeyBytes = Hex-Decode $ApiKey
+    $k1 = Invoke-HmacSha256 (Hex-Decode $nonce) $apiKeyBytes
+    $k2 = Invoke-HmacSha256 ([Text.Encoding]::UTF8.GetBytes("$ts")) $k1
+    $k3 = Invoke-HmacSha256 ([Text.Encoding]::UTF8.GetBytes('vcode_request_version_1')) $k2
+    $sig = Invoke-HmacSha256 ([Text.Encoding]::UTF8.GetBytes($data)) $k3
+    return "VERACODE-HMAC-SHA-256 id=$ApiId,ts=$ts,nonce=$nonce,sig=$(Hex-Encode $sig)"
+}
+
+function Get-HttpStatusFromException($err) {
+    # PS5 throws WebException; PS7 throws HttpResponseException. Both expose Response.
+    try {
+        $resp = $err.Exception.Response
+        if ($resp -and $resp.StatusCode) {
+            return [int]$resp.StatusCode
+        }
+    } catch { }
+    return $null
+}
+
+function Test-RepoUrl([string]$url) {
+    if (-not $url) { return @{ ok = $false; reason = "empty" } }
+    if ($url -notmatch '^https?://[^\s]+/_git/[^\s]+$') {
+        return @{ ok = $false; reason = "expected https://.../_git/<repo>" }
+    }
+    return @{ ok = $true; reason = "format ok" }
+}
+
+function Test-ProjectName([string]$name) {
+    if (-not $name) { return @{ ok = $false; reason = "empty" } }
+    if ($name -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._\-]{0,199}$') {
+        return @{ ok = $false; reason = "use alphanumeric / dot / dash / underscore, max 200 chars" }
+    }
+    $cfg = Join-Path $PSScriptRoot 'dev.config.yml'
+    if (Test-Path $cfg) {
+        $existing = Select-String -Path $cfg -Pattern '^\s+-\s+name:\s*(.+?)\s*$' -AllMatches
+        foreach ($m in $existing) {
+            $existingName = ($m.Matches[0].Groups[1].Value).Trim()
+            if ($existingName -ieq $name) {
+                return @{ ok = $false; reason = "already in dev.config.yml" }
+            }
+        }
+    }
+    return @{ ok = $true; reason = "ok" }
+}
+
+function Test-VeracodeCredentials {
+    param([string]$ApiId, [string]$ApiKey, [string]$BaseUrl = 'https://api.veracode.com')
+    if ($ApiId -notmatch '^[0-9a-fA-F]{8,}$') {
+        return @{ ok = $false; reason = "API ID must be hex (got $($ApiId.Length) chars)" }
+    }
+    if ($ApiKey -notmatch '^[0-9a-fA-F]{16,}$') {
+        return @{ ok = $false; reason = "API key must be hex (got $($ApiKey.Length) chars)" }
+    }
+    $path = '/appsec/v1/applications?size=1'
+    try {
+        $auth = New-VeracodeHmacHeader -ApiId $ApiId -ApiKey $ApiKey -HttpMethod 'GET' -UriPath $path
+        $null = Invoke-WebRequest -Uri "$BaseUrl$path" `
+            -Headers @{ Authorization = $auth } `
+            -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+        return @{ ok = $true; reason = "live API ping accepted" }
+    } catch {
+        $status = Get-HttpStatusFromException $_
+        if ($status -in 401, 403) {
+            return @{ ok = $false; reason = "Veracode rejected the credentials (HTTP $status)" }
+        }
+        if ($status) {
+            return @{ ok = $false; reason = "Veracode returned HTTP $status" }
+        }
+        return @{ ok = $false; reason = "could not reach $BaseUrl -- $($_.Exception.Message)" }
+    }
+}
+
+function Test-SonarCredentials {
+    param([string]$Url, [string]$Token)
+    if ($Url -notmatch '^https?://') {
+        return @{ ok = $false; reason = "URL must start with http:// or https://" }
+    }
+    $clean = $Url.TrimEnd('/')
+    try {
+        $ping = Invoke-WebRequest -Uri "$clean/api/system/ping" `
+            -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+        if ($ping.Content.Trim() -ne 'pong') {
+            return @{ ok = $false; reason = "$clean responded but did not say 'pong' (is this really SonarQube?)" }
+        }
+    } catch {
+        return @{ ok = $false; reason = "could not reach $clean -- $($_.Exception.Message)" }
+    }
+    try {
+        $authHeader = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$Token`:"))
+        $resp = Invoke-RestMethod -Uri "$clean/api/authentication/validate" `
+            -Headers @{ Authorization = $authHeader } `
+            -TimeoutSec 10 -ErrorAction Stop
+        if ($resp.valid) {
+            return @{ ok = $true; reason = "token valid" }
+        }
+        return @{ ok = $false; reason = "Sonar rejected the token (valid=false)" }
+    } catch {
+        $status = Get-HttpStatusFromException $_
+        if ($status -in 401, 403) {
+            return @{ ok = $false; reason = "Sonar rejected the token (HTTP $status)" }
+        }
+        return @{ ok = $false; reason = "token validation failed: $($_.Exception.Message)" }
+    }
+}
+
+function Confirm-OnFailure {
+    param([string]$Kind, [string]$Reason)
+    Write-Host ("  [VALIDATION FAILED] {0}: {1}" -f $Kind, $Reason) -ForegroundColor Red
+    Write-Host "  [R]etry  [S]ave anyway  [Q]uit setup" -ForegroundColor Yellow
+    while ($true) {
+        $choice = (Read-Host "  Choice").Trim().ToUpper()
+        switch ($choice) {
+            'R' { return 'retry' }
+            'S' { return 'save' }
+            'Q' { Write-Host "Aborted." -ForegroundColor Yellow; exit 0 }
+            default { Write-Host "  Enter R, S, or Q." -ForegroundColor Yellow }
+        }
+    }
+}
+
 # ─── Prompts ────────────────────────────────────────────────────────────────
 
 function Prompt-Project([hashtable]$Previous = $null) {
     Banner "Project"
-    $projectName   = Read-Required "Project name (e.g. payments-svc)"
-    $repoUrl       = Read-Required "Azure Repos URL (https://.../_git/<repo>)"
+
+    while ($true) {
+        $projectName = Read-Required "Project name (e.g. payments-svc)"
+        $r = Test-ProjectName $projectName
+        if ($r.ok) { break }
+        $decision = Confirm-OnFailure "project name" $r.reason
+        if ($decision -eq 'save') { break }
+    }
+
+    while ($true) {
+        $repoUrl = Read-Required "Azure Repos URL (https://.../_git/<repo>)"
+        $r = Test-RepoUrl $repoUrl
+        if ($r.ok) { break }
+        $decision = Confirm-OnFailure "repo URL" $r.reason
+        if ($decision -eq 'save') { break }
+    }
+
     $defaultBranch = Read-Required "Default branch" "main"
     $description   = Read-Optional "Description"
 
@@ -90,14 +265,27 @@ function Prompt-Project([hashtable]$Previous = $null) {
     $veracode = @{ secret = $null; scaGuid = $null; sastGuid = $null }
     if ($reuseVera) {
         $veracode.secret = $Previous.veracode.secret
+        Write-Host "  (reusing previous Veracode credentials; skipping re-validation)" -ForegroundColor DarkGray
     } else {
-        $apiId = Read-Optional "Veracode API ID (hex)"
-        if ($apiId) {
+        while ($true) {
+            $apiId = Read-Optional "Veracode API ID (hex)"
+            if (-not $apiId) { break }
             $apiKey = Read-Secret "Veracode API key (hex)"
-            if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
-                $veracode.secret = "$apiId`:$apiKey"
-            } else {
+            if ([string]::IsNullOrWhiteSpace($apiKey)) {
                 Write-Host "  API key required when ID provided; skipping Veracode for this project." -ForegroundColor Yellow
+                break
+            }
+            Write-Host "  Validating Veracode credentials live (HMAC-signed ping)..." -ForegroundColor DarkGray
+            $r = Test-VeracodeCredentials -ApiId $apiId -ApiKey $apiKey
+            if ($r.ok) {
+                Write-Host ("  [OK] {0}" -f $r.reason) -ForegroundColor Green
+                $veracode.secret = "$apiId`:$apiKey"
+                break
+            }
+            $decision = Confirm-OnFailure "Veracode" $r.reason
+            if ($decision -eq 'save') {
+                $veracode.secret = "$apiId`:$apiKey"
+                break
             }
         }
     }
@@ -116,13 +304,29 @@ function Prompt-Project([hashtable]$Previous = $null) {
     if ($reuseSonar) {
         $sonar.url = $Previous.sonar.url
         $sonar.token = $Previous.sonar.token
+        Write-Host "  (reusing previous Sonar credentials; skipping re-validation)" -ForegroundColor DarkGray
     } else {
-        $sonar.url = Read-Optional "Sonar base URL (e.g. https://sonar.acme.com)"
-        if ($sonar.url) {
-            $sonar.token = Read-Secret "Sonar user token"
-            if ([string]::IsNullOrWhiteSpace($sonar.token)) {
+        while ($true) {
+            $url = Read-Optional "Sonar base URL (e.g. https://sonar.acme.com)"
+            if (-not $url) { break }
+            $token = Read-Secret "Sonar user token"
+            if ([string]::IsNullOrWhiteSpace($token)) {
                 Write-Host "  Sonar token required; skipping Sonar for this project." -ForegroundColor Yellow
-                $sonar.url = $null
+                break
+            }
+            Write-Host "  Validating Sonar credentials live..." -ForegroundColor DarkGray
+            $r = Test-SonarCredentials -Url $url -Token $token
+            if ($r.ok) {
+                Write-Host ("  [OK] {0}" -f $r.reason) -ForegroundColor Green
+                $sonar.url = $url
+                $sonar.token = $token
+                break
+            }
+            $decision = Confirm-OnFailure "Sonar" $r.reason
+            if ($decision -eq 'save') {
+                $sonar.url = $url
+                $sonar.token = $token
+                break
             }
         }
     }
@@ -171,7 +375,7 @@ function Render-Project([hashtable]$p) {
     $hasAnySource = ($p.veracode.secret -and ($p.veracode.scaGuid -or $p.veracode.sastGuid)) `
                     -or ($p.sonar.url -and $p.sonar.token)
     if (-not $hasAnySource) {
-        [void]$sb.AppendLine("          # no scan sources configured — add via UI or re-run setup add")
+        [void]$sb.AppendLine("          # no scan sources configured -- add via UI or re-run setup add")
         return $sb.ToString()
     }
     [void]$sb.AppendLine("          scanSources:")
@@ -243,7 +447,7 @@ if ($effectiveMode -ne 'add' -and $effectiveMode -ne 'overwrite' -and $existing)
     Write-Host ""
     Write-Host "dev.config.yml already exists." -ForegroundColor Yellow
     Write-Host "  [A] Add another project (preserves existing config)"
-    Write-Host "  [O] Overwrite — start fresh"
+    Write-Host "  [O] Overwrite -- start fresh"
     Write-Host "  [Q] Quit"
     while ($true) {
         $choice = (Read-Host "Choice").Trim().ToUpper()
@@ -257,7 +461,7 @@ if ($effectiveMode -ne 'add' -and $effectiveMode -ne 'overwrite' -and $existing)
     }
 } elseif ($effectiveMode -eq 'add' -and -not $existing) {
     Write-Host ""
-    Write-Host "dev.config.yml does not exist yet — running fresh setup instead of 'add'." -ForegroundColor Yellow
+    Write-Host "dev.config.yml does not exist yet -- running fresh setup instead of 'add'." -ForegroundColor Yellow
     $effectiveMode = 'fresh'
 } elseif (-not $existing) {
     $effectiveMode = 'fresh'
@@ -300,7 +504,7 @@ if ($effectiveMode -eq 'add') {
     Write-Host "============================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "Restart the backend (stop.bat then start.bat) to register it."
-    Write-Host "Or register via the UI at http://localhost:9211 — no restart needed."
+    Write-Host "Or register via the UI at http://localhost:9211 -- no restart needed."
     exit 0
 }
 
@@ -337,7 +541,7 @@ foreach ($p in $projects) {
     if ($p.veracode.secret -and $p.veracode.scaGuid)  { $sources += 'SCA' }
     if ($p.veracode.secret -and $p.veracode.sastGuid) { $sources += 'SAST' }
     if ($p.sonar.url -and $p.sonar.token)             { $sources += 'Sonar' }
-    $sourceList = if ($sources.Count -gt 0) { $sources -join ', ' } else { '(none — UI later)' }
+    $sourceList = if ($sources.Count -gt 0) { $sources -join ', ' } else { '(none -- UI later)' }
     Write-Host ("  - {0,-25} sources: {1}" -f $p.name, $sourceList) -ForegroundColor Green
 }
 Write-Host ("  Copilot generator: {0}" -f $copilotGen) -ForegroundColor Green
@@ -345,7 +549,7 @@ Write-Host ""
 Write-Host "Next:"
 Write-Host "  1. build.bat fast       (one-time build)"
 Write-Host "  2. start.bat            (backend 9200, frontend 9211)"
-Write-Host "  3. http://localhost:9211 — projects auto-register, initial scans run"
+Write-Host "  3. http://localhost:9211 -- projects auto-register, initial scans run"
 Write-Host ""
 Write-Host "Later, to add more projects:"
 Write-Host "  setup.bat add           (or add-project.bat)"
