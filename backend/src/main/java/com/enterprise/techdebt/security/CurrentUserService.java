@@ -3,6 +3,9 @@ package com.enterprise.techdebt.security;
 import com.enterprise.techdebt.config.MdcConstants;
 import com.enterprise.techdebt.domain.AppUser;
 import com.enterprise.techdebt.repo.AppUserRepository;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -19,6 +22,9 @@ import java.time.Instant;
 @Service
 public class CurrentUserService {
 
+    private static final Logger log = LoggerFactory.getLogger(CurrentUserService.class);
+    private static final String DEV_UPN = "dev@local";
+
     private final AppUserRepository userRepository;
     private final boolean devBypass;
     private final TransactionTemplate newTxTemplate;
@@ -32,9 +38,33 @@ public class CurrentUserService {
         this.newTxTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
+    /**
+     * Pre-seed the dev@local user when dev-bypass is enabled so the first wave
+     * of parallel requests from the SPA don't race each other into the same
+     * insert. Runs once at startup, single-threaded, so no race here.
+     */
+    @PostConstruct
+    void prewarmDevUser() {
+        if (!devBypass) return;
+        if (userRepository.findByUpnIgnoreCase(DEV_UPN).isPresent()) return;
+        try {
+            newTxTemplate.execute(status -> userRepository.saveAndFlush(AppUser.builder()
+                    .upn(DEV_UPN)
+                    .email(DEV_UPN)
+                    .displayName("Local Dev")
+                    .enabled(true)
+                    .createdAt(Instant.now())
+                    .build()));
+            log.info("Pre-seeded dev-bypass user {}", DEV_UPN);
+        } catch (DataIntegrityViolationException ignored) {
+            // Another instance (or a previous run on the same shared DB) already
+            // created it — harmless.
+        }
+    }
+
     public CurrentUser require() {
         if (devBypass) {
-            return upsertAndDecorate("dev@local", "dev@local", "Local Dev");
+            return upsertAndDecorate(DEV_UPN, DEV_UPN, "Local Dev");
         }
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || !(auth.getPrincipal() instanceof Jwt jwt)) {
