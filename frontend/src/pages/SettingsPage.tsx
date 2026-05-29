@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getKillSwitch, setKillSwitch } from '../api/system';
 import { ErrorBanner } from '../components/ErrorBanner';
+import { PlatformCredentialsSection } from '../components/PlatformCredentialsSection';
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -23,6 +24,8 @@ export function SettingsPage() {
       </div>
 
       <ErrorBanner error={error || toggle.error} />
+
+      <PlatformCredentialsSection />
 
       <div className="card space-y-3">
         <div className="flex items-start justify-between gap-4">
@@ -74,9 +77,9 @@ export function SettingsPage() {
       <div className="card">
         <h2 className="text-lg font-semibold">Coming soon</h2>
         <ul className="mt-2 list-disc pl-6 text-sm text-slate-600">
-          <li>Notification channel preferences (Sprint 7 backend — Teams + Email already on)</li>
-          <li>Retention policy + reaper (Sprint 8)</li>
+          <li>Notification channel preferences (Teams + Email already wired backend-side)</li>
           <li>Per-org notification routing rules</li>
+          <li>Wire scan sources to platform credentials (no per-source secret duplication)</li>
         </ul>
       </div>
     </div>
