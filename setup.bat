@@ -11,5 +11,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" %*
+REM setup.bat         — fresh setup (or A/O/Q menu if config exists)
+REM setup.bat add     — append one project to existing dev.config.yml
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -Mode "%~1"
 exit /b %errorlevel%

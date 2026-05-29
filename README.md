@@ -19,12 +19,27 @@ Built for banking-domain delivery teams. Designed so the audit trail, safety gat
 **Windows — one-time setup that gets a developer to real issues in two minutes:**
 
 ```cmd
-setup.bat              REM prompts for project + Veracode/Sonar/Copilot tokens; writes dev.config.yml
+setup.bat              REM batch-onboard 1..N projects in one session
 build.bat fast         REM compile backend + frontend (skip tests)
-start.bat              REM opens backend (9200) and frontend (9211) in separate windows
+start.bat              REM opens backend (9200) and frontend (9211)
 ```
 
-After `start.bat`, open **http://localhost:9211**. The platform auto-registers the project you configured, applies the credentials, and triggers an initial scan — your real Veracode + Sonar findings appear in the inbox without any UI clicks.
+`setup.bat` prompts for Copilot once, then loops "Add another project? (Y/n)" — so you can batch-onboard every service you work on (different Veracode/Sonar credentials per project supported). After `start.bat`, open **http://localhost:9211**: all configured projects auto-register and initial scans fire.
+
+Adding more projects later (joined a new team):
+
+```cmd
+add-project.bat        REM appends one new project to dev.config.yml
+                       REM (equivalent to: setup.bat add)
+stop.bat & start.bat   REM restart backend to pick it up
+```
+
+Or just use the **Register project** button in the web UI — no restart needed, ad-hoc additions are first-class.
+
+If `dev.config.yml` already exists, running `setup.bat` plain (no `add`) presents:
+- **A** — Add another project (keeps existing)
+- **O** — Overwrite (start fresh)
+- **Q** — Quit
 
 Day-to-day:
 
@@ -36,7 +51,7 @@ build.bat              REM full build with tests
 
 `start.bat` refuses to launch if either port is already in use (points you at `stop.bat`), so the zombie-process trap doesn't bite. Each service runs in its own cmd window so logs stay visible.
 
-Skipping `setup.bat` is fine — the platform boots empty and you can register projects through the UI. See **[ONBOARDING.md](ONBOARDING.md)** for the manual path.
+Skipping `setup.bat` entirely is fine — the platform boots empty and you can register everything through the UI. See **[ONBOARDING.md](ONBOARDING.md)** for the UI-only path.
 
 **Manual / cross-platform:**
 
