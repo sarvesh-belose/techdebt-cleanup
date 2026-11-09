@@ -1,0 +1,1156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  The leanest configuration that is still highly available: 7 servers, 88 cores, for 10,000 users from one site.
+
+  Oracle is not supported by the product today. The operational databases are parameterized
+  across SQL Server, PostgreSQL and H2; the warehouse is SQL Server alone. See
+  architecture/oracle-support-gap.md before quoting any of this as deliverable. Oracle also
+  carries no columnar store without the separately licensed In-Memory option, so the
+  warehouse takes 1.5x the cores and 1.8x the storage of the SQL Server figures - both
+  planning estimates that need a benchmark.
+
+  The SCENARIO block holds the values this file opens with and is the only thing that
+  differs between the five sizing files. expect guards against the model drifting from the
+  figures the document states.
+-->
+<title>RM Platform Sizing — Minimum Viable</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: a sticky control rail on the left, results scrolling beside it; one column under 900px. */
+  :root {
+    --bg: #f4f4f2;
+    --surface: #ffffff;
+    --surface-2: #ececeb;
+    --line: #d6d6d3;
+    --line-strong: #b4b4b0;
+    --fg: #1c1c1b;
+    --fg-dim: #5e5e5a;
+    --fg-faint: #86868180;
+    --accent: #8a5a12;
+    --accent-soft: #f0e3cd;
+    --reuse: #2f6b4f;
+    --reuse-soft: #dfeee6;
+    --procure: #9c3722;
+    --procure-soft: #f6e2dd;
+    --font-display: 'IBM Plex Sans Condensed', 'Arial Narrow', system-ui, sans-serif;
+    --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    --font-data: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17171a;
+      --surface: #202024;
+      --surface-2: #27272c;
+      --line: #35353b;
+      --line-strong: #4e4e56;
+      --fg: #ececed;
+      --fg-dim: #a0a0a4;
+      --fg-faint: #6a6a7080;
+      --accent: #e0ad5d;
+      --accent-soft: #3a2e18;
+      --reuse: #6cc49a;
+      --reuse-soft: #1d3329;
+      --procure: #e89078;
+      --procure-soft: #3a211b;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17171a;
+    --surface: #202024;
+    --surface-2: #27272c;
+    --line: #35353b;
+    --line-strong: #4e4e56;
+    --fg: #ececed;
+    --fg-dim: #a0a0a4;
+    --fg-faint: #6a6a7080;
+    --accent: #e0ad5d;
+    --accent-soft: #3a2e18;
+    --reuse: #6cc49a;
+    --reuse-soft: #1d3329;
+    --procure: #e89078;
+    --procure-soft: #3a211b;
+    color-scheme: dark;
+  }
+
+  html { color-scheme: light; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1340px;
+    margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 28px 56px;
+  }
+
+  header.page { border-bottom: 2px solid var(--fg); padding-bottom: 14px; margin-bottom: 22px; }
+  header.page h1 {
+    font-family: var(--font-display);
+    font-size: clamp(26px, 4.4vw, 40px);
+    line-height: 1.04;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  header.page p { margin: 0; color: var(--fg-dim); max-width: 68ch; }
+  .basis {
+    font-family: var(--font-data);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin-top: 10px;
+  }
+
+  .cols { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 26px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+
+  .rail { position: sticky; top: env(safe-area-inset-top, 0px); display: flex; flex-direction: column; gap: 16px; }
+  @media (max-width: 900px) { .rail { position: static; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); padding: 14px 15px 16px; }
+  .panel > h2 {
+    font-family: var(--font-data);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin: 0 0 12px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .field { margin-bottom: 15px; }
+  .field:last-child { margin-bottom: 0; }
+  .field > label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+  /* Dotted underline marks a label that carries a hover explanation. */
+  .field .nm {
+    font-size: 12.5px; color: var(--fg); cursor: help;
+    text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px;
+  }
+  .checks[title] label, .seg[title] { cursor: help; }
+  .field .vl { font-family: var(--font-data); font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+  input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+  .hint { font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+
+  .seg { display: flex; border: 1px solid var(--line-strong); }
+  .seg button {
+    flex: 1; min-width: 0; padding: 8px 6px; border: 0; cursor: pointer;
+    background: var(--surface); color: var(--fg-dim);
+    font-family: var(--font-body); font-size: 12px; font-weight: 500;
+  }
+  .seg button + button { border-left: 1px solid var(--line-strong); }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); font-weight: 600; }
+
+  .checks { display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .checks label {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    background: var(--surface); cursor: pointer; font-size: 12.5px;
+  }
+  .checks label:hover { background: var(--surface-2); }
+  .checks input { accent-color: var(--reuse); margin: 0; flex: none; }
+  .checks .tx { min-width: 0; }
+  .checks label.on .tx { color: var(--reuse); }
+
+  .btn {
+    width: 100%; padding: 8px; cursor: pointer; background: var(--surface-2);
+    border: 1px solid var(--line-strong); color: var(--fg);
+    font-family: var(--font-body); font-size: 12px; font-weight: 500;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .btn + .btn { margin-top: 7px; }
+
+  .derived { background: var(--fg); color: var(--bg); padding: 15px 16px; margin-bottom: 22px; }
+  .derived h2 {
+    font-family: var(--font-data); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; margin: 0 0 11px; opacity: 0.62;
+  }
+  .dgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 13px 16px; }
+  .dgrid div { min-width: 0; }
+  .dgrid dt { font-size: 11px; opacity: 0.66; margin-bottom: 1px; }
+  .dgrid dd {
+    margin: 0; font-family: var(--font-data); font-size: 19px; font-weight: 500;
+    font-variant-numeric: tabular-nums; line-height: 1.15;
+  }
+  .dgrid dd small { font-size: 11px; font-weight: 400; opacity: 0.66; }
+
+  h3.env {
+    font-family: var(--font-display); font-size: 21px; margin: 26px 0 3px;
+    padding-top: 15px; border-top: 1px solid var(--line-strong);
+  }
+  h3.env:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .envnote { color: var(--fg-dim); font-size: 12.5px; margin: 0 0 11px; }
+
+  .tscroll { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 12.5px; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    font-family: var(--font-data); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--fg-dim); font-weight: 500; background: var(--surface-2);
+    position: sticky; top: 0; border-bottom: 1px solid var(--line-strong);
+  }
+  td.n, th.n { text-align: right; font-family: var(--font-data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr:hover td { background: var(--surface-2); }
+  tbody tr.reused td { color: var(--fg-dim); }
+  tbody tr.reused td.srv { text-decoration: line-through; text-decoration-color: var(--fg-faint); }
+  tfoot td { font-weight: 600; border-top: 2px solid var(--fg); border-bottom: 0; background: var(--surface); }
+  .cat {
+    font-family: var(--font-data); font-size: 9.5px; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--fg-dim); display: block; margin-bottom: 1px;
+  }
+  .pill {
+    display: inline-block; padding: 1px 6px; font-family: var(--font-data); font-size: 9.5px;
+    letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
+  }
+  .pill.r { background: var(--reuse-soft); color: var(--reuse); }
+  .pill.p { background: var(--procure-soft); color: var(--procure); }
+
+  .grand { margin-top: 30px; border: 2px solid var(--fg); background: var(--surface); }
+  .grand h3 {
+    font-family: var(--font-display); font-size: 19px; margin: 0;
+    padding: 11px 14px; background: var(--fg); color: var(--bg);
+  }
+  .grand .tscroll { border: 0; }
+  .grand table { min-width: 560px; }
+
+  .guide { margin-top: 32px; padding-top: 18px; border-top: 2px solid var(--fg); }
+  .guide h3 { font-family: var(--font-display); font-size: 21px; margin: 0 0 4px; }
+  .guide h4 {
+    font-family: var(--font-data); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--fg-dim); margin: 18px 0 7px;
+  }
+  .guide table { min-width: 520px; }
+  .guide td:first-child { white-space: nowrap; }
+  .guide td { line-height: 1.45; }
+  @media (min-width: 760px) {
+    .guide td:first-child { width: 20%; }
+    .guide td:nth-child(2) { width: 38%; }
+  }
+
+  .notes { margin-top: 26px; border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; }
+  .notes h3 { font-family: var(--font-display); font-size: 16px; margin: 0 0 7px; }
+  .notes ul { margin: 0; padding-left: 17px; color: var(--fg-dim); font-size: 12.5px; }
+  .notes li { margin-bottom: 5px; }
+  .notes li:last-child { margin-bottom: 0; }
+  .notes b { color: var(--fg); font-weight: 600; }
+
+  .status { font-family: var(--font-data); font-size: 11px; padding: 7px 9px; margin-top: 7px; text-align: center; }
+  .status.match { background: var(--reuse-soft); color: var(--reuse); }
+  .status.diff { background: var(--accent-soft); color: var(--accent); }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="page">
+    <h1>RM Platform Sizing — minimum viable system</h1>
+    <p>On-premises infrastructure sizing for one bank, derived live from the workload. Change the user
+      population, concurrency or data volumes and every server count, core count and volume below moves
+      with them.</p>
+    <p class="basis" id="basis"></p>
+  </header>
+
+  <div class="cols">
+    <div class="rail">
+      <div class="panel">
+        <h2>Workload</h2>
+        <div class="field">
+          <label for="users"><span class="nm">Provisioned users</span><span class="vl" id="users-v"></span></label>
+          <input type="range" id="users" min="1000" max="40000" step="500" value="10000">
+        </div>
+        <div class="field">
+          <label for="conc"><span class="nm">Peak concurrency</span><span class="vl" id="conc-v"></span></label>
+          <input type="range" id="conc" min="5" max="80" step="1" value="30">
+          <p class="hint" id="conc-hint"></p>
+        </div>
+        <div class="field">
+          <label for="cust"><span class="nm">Customers (client entities)</span><span class="vl" id="cust-v"></span></label>
+          <input type="range" id="cust" min="10000" max="500000" step="10000" value="100000">
+        </div>
+        <div class="field">
+          <label for="rpm"><span class="nm">Requests / active user / min</span><span class="vl" id="rpm-v"></span></label>
+          <input type="range" id="rpm" min="4" max="30" step="1" value="12">
+        </div>
+        <div class="field">
+          <label for="readpct"><span class="nm">Read share of traffic</span><span class="vl" id="readpct-v"></span></label>
+          <input type="range" id="readpct" min="50" max="95" step="1" value="85">
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Performance targets</h2>
+        <div class="field">
+          <label for="api"><span class="nm">API p95</span><span class="vl" id="api-v"></span></label>
+          <input type="range" id="api" min="250" max="3000" step="250" value="2000">
+          <p class="hint" id="api-hint"></p>
+        </div>
+        <div class="field">
+          <label for="drill"><span class="nm">Drill page</span><span class="vl" id="drill-v"></span></label>
+          <input type="range" id="drill" min="1" max="10" step="1" value="5">
+          <p class="hint" id="drill-hint"></p>
+        </div>
+        <div class="field">
+          <label for="msg"><span class="nm">Message processing</span><span class="vl" id="msg-v"></span></label>
+          <input type="range" id="msg" min="2" max="20" step="1" value="10">
+          <p class="hint" id="msg-hint"></p>
+        </div>
+        <div class="field">
+          <label for="hit"><span class="nm">Cache hit rate</span><span class="vl" id="hit-v"></span></label>
+          <input type="range" id="hit" min="50" max="95" step="5" value="80">
+          <p class="hint" id="hit-hint"></p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Data volumes</h2>
+        <div class="field">
+          <label for="post"><span class="nm">Postings per day</span><span class="vl" id="post-v"></span></label>
+          <input type="range" id="post" min="500000" max="20000000" step="250000" value="3500000">
+        </div>
+        <div class="field">
+          <label for="hist"><span class="nm">History retained</span><span class="vl" id="hist-v"></span></label>
+          <input type="range" id="hist" min="6" max="84" step="6" value="24">
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Availability</h2>
+        <div class="seg" id="ha-seg" role="group" aria-label="Availability">
+          <button type="button" data-ha="1" aria-pressed="true">Highly available</button>
+          <button type="button" data-ha="0" aria-pressed="false">Pilot</button>
+        </div>
+        <p class="hint" id="ha-hint"></p>
+      </div>
+
+      <div class="panel">
+        <h2>Database engine</h2>
+        <div class="seg" id="engine-seg" role="group" aria-label="Database engine">
+          <button type="button" data-engine="sqlserver" aria-pressed="true">SQL Server</button>
+          <button type="button" data-engine="oracle" aria-pressed="false">Oracle</button>
+          <button type="button" data-engine="postgresql" aria-pressed="false">Postgres</button>
+        </div>
+        <p class="hint" id="engine-hint"></p>
+      </div>
+
+      <div class="panel">
+        <h2>Pod and node sizing</h2>
+        <div class="field">
+          <label for="podcpu"><span class="nm">CPU request per pod</span><span class="vl" id="podcpu-v"></span></label>
+          <input type="range" id="podcpu" min="200" max="800" step="20" value="500">
+          <p class="hint" id="podcpu-hint"></p>
+        </div>
+        <div class="field">
+          <label for="podmem"><span class="nm">Memory request per pod</span><span class="vl" id="podmem-v"></span></label>
+          <input type="range" id="podmem" min="384" max="2048" step="128" value="1024">
+        </div>
+        <div class="field">
+          <label for="nodecpu"><span class="nm">Cores per application host</span><span class="vl" id="nodecpu-v"></span></label>
+          <input type="range" id="nodecpu" min="8" max="48" step="4" value="16">
+          <p class="hint" id="nodecpu-hint"></p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Deployment</h2>
+        <div class="seg" id="opt-seg" role="group" aria-label="Deployment option">
+          <button type="button" id="opt-k8s" aria-pressed="true">With Kubernetes</button>
+          <button type="button" id="opt-vm" aria-pressed="false">Without</button>
+        </div>
+        <p class="hint" id="opt-hint"></p>
+      </div>
+
+      <div class="panel">
+        <h2>Environments</h2>
+        <div class="checks" id="env-checks">
+          <label class="on"><input type="checkbox" id="env-uat" checked><span class="tx">UAT</span></label>
+          <label class="on"><input type="checkbox" id="env-dc" checked><span class="tx">Production — DC</span></label>
+          <label class="on"><input type="checkbox" id="env-dr" checked><span class="tx">Production — DR</span></label>
+        </div>
+        <div style="margin-top:12px" class="checks">
+          <label><input type="checkbox" id="uatperf"><span class="tx">Size UAT for load testing</span></label>
+          <label><input type="checkbox" id="gpu"><span class="tx">On-premises model serving (GPU)</span></label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Bank already operates</h2>
+        <div class="checks" id="reuse-box"></div>
+        <p class="hint">Ticked capability is reused from the bank's existing estate and drops out of the
+          procurement total.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Export</h2>
+        <button type="button" class="btn" id="copy-csv">Copy all tables as CSV</button>
+        <button type="button" class="btn" id="reset">Reset to this file's opening values</button>
+        <p class="status" id="status"></p>
+      </div>
+    </div>
+
+    <main id="out"></main>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Reusable platform capability (Category B in the sizing document) -------------------
+  var REUSABLE = [
+    { k: "platform",  label: "Kubernetes platform",   only: "k8s" },
+    { k: "router",    label: "Internal service routing", only: "vm" },
+    { k: "lb",        label: "Load balancers" },
+    { k: "broker",    label: "Message broker (RabbitMQ)" },
+    { k: "cache",     label: "Cache (Redis)" },
+    { k: "objstore",  label: "S3-compatible object store" },
+    { k: "observ",    label: "Observability platform" },
+    { k: "repo",      label: "Registry / artifact repository" },
+    { k: "bastion",   label: "Bastion / config management" },
+    { k: "backup",    label: "Enterprise backup estate" }
+  ];
+
+  // Database engines. The warehouse factors are the consequence of a columnar store being
+  // present or not: SQL Server has columnstore in Enterprise, Oracle only with the separately
+  // licensed In-Memory option, PostgreSQL only through Citus. Without one, the same drill
+  // scans need more CPU and the postings fact compresses far less.
+  // BOTH FACTORS ARE PLANNING ESTIMATES AND NEED A BENCHMARK. See architecture/oracle-support-gap.md.
+  var ENGINES = {
+    sqlserver: {
+      name: "SQL Server", columnar: true, whCpu: 1.0, whStore: 1.0,
+      db: "SQL Server 2022 Enterprise",
+      dbNote: "columnstore, table partitioning and readable secondaries all required, and all included in Enterprise",
+      os: "Windows Server 2022 Std/DC · RHEL 9.x · Ubuntu 22.04 LTS",
+      soft: "Database engine, Always On Availability Groups, SQL Server Agent, Flyway 10+, enterprise backup agent",
+      ha: "synchronous Always On replica", read: "readable Always On replica", async: "asynchronous Always On replica",
+      support: "Supported and CI-tested"
+    },
+    oracle: {
+      name: "Oracle", columnar: false, whCpu: 1.5, whStore: 1.8,
+      db: "Oracle Database 19c or 23ai, Enterprise Edition + Partitioning",
+      dbNote: "Partitioning is required and separately licensed; a columnar store needs Database In-Memory, also separately licensed; a readable standby needs Active Data Guard",
+      os: "Oracle Linux 8/9 · RHEL 8/9 · Windows Server 2022",
+      soft: "Database engine, Partitioning option, Data Guard, RMAN, Flyway 10+. Oracle JDBC driver in the services",
+      ha: "synchronous Data Guard standby", read: "Active Data Guard readable standby", async: "asynchronous Data Guard standby",
+      support: "NOT SUPPORTED TODAY — delivery scope item"
+    },
+    postgresql: {
+      name: "PostgreSQL", columnar: false, whCpu: 1.5, whStore: 1.8,
+      db: "PostgreSQL 16",
+      dbNote: "no columnar store in core; partitioning is included, a columnar store needs the Citus extension",
+      os: "RHEL 9.x · Oracle Linux 9.x · Ubuntu 22.04/24.04 LTS",
+      soft: "Database engine, Patroni or repmgr, pgBackRest, Flyway 10+",
+      ha: "synchronous streaming standby", read: "hot standby", async: "asynchronous streaming standby",
+      support: "Operational databases supported; warehouse is not"
+    }
+  };
+
+  // ======================================================================================
+  // SCENARIO — the values this file opens with, and the only thing that differs between
+  // this file and a variant of it. To make a variant, copy the file and edit this block:
+  // everything below is identical in every copy. `expect` is a drift guard, not a setting;
+  // when the totals stop matching it, the badge says so instead of claiming a match.
+  // ======================================================================================
+  var SCENARIO = {
+    label: "Minimum viable · 88 cores",
+    expect: { k8s: { srv: 7, cores: 88 }, vm: { srv: 8, cores: 100 } },
+    users: 10000, conc: 20, cust: 100000, rpm: 12, readpct: 85,
+    api: 3000, drill: 10, msg: 10, hit: 95,
+    podcpu: 200, podmem: 1024, nodecpu: 12,
+    post: 3500000, hist: 6, opt: "k8s", engine: "oracle", ha: true,
+    envs: { uat: false, dc: true, dr: false },
+    uatperf: false, gpu: false,
+    reuse: ["platform", "router", "lb", "broker", "cache", "objstore", "observ", "repo", "bastion", "backup"]
+  };
+  // ======================================================================================
+
+  var INPUT_KEYS = ["users", "conc", "cust", "rpm", "readpct", "api", "drill", "msg", "hit",
+    "podcpu", "podmem", "nodecpu", "post", "hist"];
+
+  var state = { has: {}, envs: {} };
+  function loadScenario() {
+    INPUT_KEYS.forEach(function (k) { state[k] = SCENARIO[k]; });
+    state.opt = SCENARIO.opt;
+    state.engine = SCENARIO.engine || "sqlserver";
+    state.ha = SCENARIO.ha !== false;
+    state.uatperf = !!SCENARIO.uatperf;
+    state.gpu = !!SCENARIO.gpu;
+    ["uat", "dc", "dr"].forEach(function (e) { state.envs[e] = SCENARIO.envs[e] !== false; });
+    REUSABLE.forEach(function (r) { state.has[r.k] = (SCENARIO.reuse || []).indexOf(r.k) !== -1; });
+  }
+  function atScenario() {
+    return INPUT_KEYS.every(function (k) { return state[k] === SCENARIO[k]; }) &&
+      state.opt === SCENARIO.opt && state.engine === (SCENARIO.engine || "sqlserver") &&
+      state.ha === (SCENARIO.ha !== false) &&
+      state.uatperf === !!SCENARIO.uatperf && state.gpu === !!SCENARIO.gpu &&
+      ["uat", "dc", "dr"].every(function (e) { return state.envs[e] === (SCENARIO.envs[e] !== false); }) &&
+      REUSABLE.every(function (r) { return state.has[r.k] === ((SCENARIO.reuse || []).indexOf(r.k) !== -1); });
+  }
+  loadScenario();
+
+  // ---- Helpers ---------------------------------------------------------------------------
+  var MEM_STEPS = [8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024];
+  function snapMem(v) {
+    return MEM_STEPS.reduce(function (best, s) {
+      return Math.abs(s - v) < Math.abs(best - v) ? s : best;
+    }, MEM_STEPS[0]);
+  }
+  function evenCores(v, min) {
+    return Math.max(min, 2 * Math.round(v / 2));
+  }
+  function r1(v) { return Math.round(v * 10) / 10; }
+  function fmt(n) { return n.toLocaleString("en-US"); }
+  function tb(v) { return v >= 10 ? Math.round(v) + " TB" : r1(v) + " TB"; }
+
+  // ---- The model. Defaults reproduce the published v3.0 figures exactly. -------------------
+  function model(s) {
+    var m = {};
+    m.concurrent = Math.round(s.users * s.conc / 100);
+    m.peakRPS = Math.round(m.concurrent * s.rpm / 60);
+    m.readRPS = Math.round(m.peakRPS * s.readpct / 100);
+    m.writeRPS = m.peakRPS - m.readRPS;
+
+    // Latency budget sets how hard a pod may be driven before p95 breaks. A looser budget
+    // permits more queueing, so the autoscaler can hold a higher CPU target and each pod
+    // serves more requests. The gain saturates: a pod's service capacity is fixed by CPU,
+    // so 4x the budget is nowhere near 4x the throughput.
+    m.utilTarget = Math.min(0.85, Math.max(0.50, 0.65 * Math.pow(s.api / 500, 0.25)));
+    m.instFactor = 0.65 / m.utilTarget;
+    m.podRPS = Math.round(50 / m.instFactor) + "–" + Math.round(80 / m.instFactor);
+    // Drill budget governs how much parallelism each columnstore scan needs.
+    m.whFactor = Math.min(1.5, Math.max(0.6, Math.pow(2 / s.drill, 0.35)));
+    // Cache hit rate decides how much of the read path reaches the warehouse at all.
+    // Sub-linear, because the readable secondary absorbs part of a worse hit rate.
+    m.missFactor = (100 - s.hit) / 20;
+    m.cacheFactor = Math.sqrt(m.missFactor);
+    m.dbReadRPS = Math.round(m.readRPS * (100 - s.hit) / 100);
+
+    // Service instances. Two per service for HA (three for gateway and reference) is a 48 floor;
+    // a pilot runs one per service, so the floor halves to 24 along with everything built on it.
+    m.floorInst = (s.ha !== false) ? 48 : 24;
+    m.peakInst = Math.max(48, Math.round(m.peakRPS * 0.225 * m.instFactor));
+    m.ceilInst = Math.max(48, Math.round(m.peakRPS * 0.36670 * m.instFactor));
+    // The gateway is the one exception to the per-pod request: 1 core and 512 MiB, whatever
+    // the default is set to, because it is reactive and holds no connection pool.
+    var cpuReq = s.podcpu / 1000, memReq = s.podmem / 1024;
+    var cores = function (n) { return n * cpuReq + (1 - cpuReq) * 3; };
+    var mem = function (n) { return n * memReq - (memReq - 0.5) * 3; };
+    m.floorCores = cores(m.floorInst); m.floorMem = mem(m.floorInst);
+    m.peakCores = cores(m.peakInst);  m.peakMem = mem(m.peakInst);
+    m.ceilCores = cores(m.ceilInst);  m.ceilMem = mem(m.ceilInst);
+
+    // High availability. With it off this is a pilot: single database nodes, single supporting
+    // nodes, and no minimum of three application hosts. It does NOT halve the database, because
+    // dropping the readable standby moves the read path onto the warehouse primary, which then
+    // needs more cores rather than fewer. Availability, failover and the drill budget all go.
+    m.ha = s.ha !== false;
+    m.oltpNodes = m.ha ? 2 : 1;
+
+    // Application hosts. Memory tracks cores at 4:1, matching the default pod request ratio.
+    // Each host loses ~2 cores and ~4 GiB to the OS and the kubelet before anything schedules.
+    m.nodeCpu = s.nodecpu; m.nodeMem = s.nodecpu * 4;
+    var SCH_C = m.nodeCpu - 2, SCH_M = m.nodeMem - 4;
+    // N+1 is an availability guarantee, so a pilot does not pay for it either.
+    var NP1 = m.ha ? 1 : 0;
+    m.nodesDC = Math.max(
+      Math.ceil(m.ceilCores / SCH_C),           // hold the burst ceiling
+      Math.ceil(m.peakCores / SCH_C) + NP1,     // or expected peak with one host down
+      Math.ceil(m.ceilMem / SCH_M),
+      Math.ceil(m.peakMem / SCH_M) + NP1, m.ha ? 3 : 1);
+    m.nodesDR = Math.max(
+      Math.ceil(m.peakCores / SCH_C) + NP1,  // expected peak after failover, N+1
+      Math.ceil(m.peakMem / SCH_M) + NP1, m.ha ? 3 : 1);
+    m.nodesUAT = s.uatperf ? Math.max(6, Math.ceil(m.nodesDC * 0.75)) : 3;
+    if (s.opt === "vm") {                    // +25%: no autoscaling, no bin-packing, coarser failure
+      m.nodesDC = Math.ceil(m.nodesDC * 1.25);
+      m.nodesDR = Math.ceil(m.nodesDR * 1.25);
+    }
+
+    // Operational database. A looser write budget relaxes the log-flush constraint.
+    m.oltpCores = evenCores(16 * Math.sqrt(m.writeRPS / 90) * m.instFactor, 8);
+    m.oltpData = Math.max(0.5, r1(1.5 * s.cust / 100000));
+    m.oltpLog = Math.max(0.25, r1(m.oltpData / 3));
+    m.oltpTemp = m.oltpLog;
+    m.oltpRAM = snapMem(85 * m.oltpData);
+    m.oltpVol = r1(0.2 + m.oltpData + m.oltpLog + m.oltpTemp);
+    m.dbConns = Math.round(m.ceilInst * 8 / 50) * 50;
+
+    // Data warehouse.
+    m.rowsBn = s.post * 30.4 * s.hist / 1e9;
+    m.whData = Math.max(1, Math.round((m.rowsBn * 1.9 + s.cust / 100000 * 1.2) * (ENGINES[s.engine] || ENGINES.sqlserver).whStore));
+    m.whLog = Math.max(1, Math.round(m.whData / 6));
+    m.whTemp = m.whLog;
+    m.eng = ENGINES[s.engine] || ENGINES.sqlserver;
+    m.whCores = evenCores(32 * Math.sqrt((m.readRPS / 510) * (m.rowsBn / 2.5536)) * m.whFactor * m.cacheFactor * m.eng.whCpu, 16);
+    m.whRAM = snapMem(43 * m.whData);
+    m.whVol = r1(0.2 + m.whData + m.whLog + m.whTemp);
+    m.whReadable = m.ha ? Math.max(1, Math.ceil(m.readRPS / 600)) : 0;
+    // Without a readable standby the primary serves the read path as well as the daily load.
+    if (!m.ha) { m.whCores = evenCores(m.whCores * 1.3, 16); }
+
+    // Supporting tiers.
+    m.redisGiB = snapMem((m.concurrent * 0.0073 + s.cust * 0.0001) * (s.hit / 80));
+    m.rabbitNodes = m.writeRPS > 120 * (s.msg / 5) ? 5 : 3;
+    m.objUsable = Math.max(2, Math.round(6 * s.cust / 100000));
+    m.objNodes = 4;
+    m.objPerNode = r1(Math.ceil(m.objUsable * 2 / m.objNodes));
+    return m;
+  }
+
+  // ---- Server lists per environment --------------------------------------------------------
+  // row: [category, name, qty, cores, ramGiB, volumeText, volumeTB, reuseKey|null, database]
+  var LIN = "RHEL 9.x · Oracle Linux 9.x · SLES 15 · Ubuntu 22.04/24.04 LTS";
+
+  function rows(env, s, m) {
+    var k8s = s.opt === "k8s", out = [];
+    var appN = env === "dc" ? m.nodesDC : env === "dr" ? m.nodesDR : m.nodesUAT;
+    var cpCores = env === "uat" ? 4 : 8, cpRAM = env === "uat" ? 16 : 32;
+
+    if (k8s) out.push(["Orchestration", "Kubernetes control plane", m.ha ? 3 : 1, cpCores, cpRAM,
+      "200 GB OS + 100 GB etcd (NVMe)", 0.3, "platform", LIN,
+      "Kubernetes 1.29+ (RKE2, OpenShift 4.14+ or kubeadm), etcd 3.5+, containerd 1.7+"]);
+
+    out.push(["Application", k8s ? "Kubernetes worker node" : "JVM application server", appN, m.nodeCpu, m.nodeMem,
+      k8s ? "200 GB OS + 300 GB images & ephemeral" : "200 GB OS + 200 GB binaries & logs", k8s ? 0.5 : 0.4, null, LIN,
+      k8s ? "kubelet 1.29+, containerd 1.7+, CNI (Calico/Cilium), CSI driver, OpenTelemetry node agent"
+          : "Eclipse Temurin JDK 21, systemd, config-management agent, OpenTelemetry Java agent, log shipper"]);
+
+    if (k8s && env !== "uat") out.push(["Orchestration", "Kubernetes infrastructure node", m.ha ? 2 : 1, 8, 32,
+      "200 GB OS + 200 GB (SSD)", 0.4, "platform", LIN,
+      "kubelet, containerd, CNI and CSI as above, plus ingress controller and certificate tooling"]);
+
+    if (!k8s) out.push(["Routing", "Internal service router", env === "uat" || !m.ha ? 1 : 2, 4, 16,
+      "100 GB OS (SSD)", 0.2, "router", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "HAProxy 2.8+ or NGINX 1.24+ with health-checked backend pools, one per service"]);
+
+    out.push(["Routing", "Load balancer / reverse proxy", env === "uat" || !m.ha ? 1 : 2, 4, 8,
+      "100 GB OS (SSD)", 0.1, "lb", "RHEL 9.x · Ubuntu 22.04 LTS · or the bank's appliance",
+      "HAProxy 2.8+ or NGINX 1.24+, active/passive with a virtual IP, TLS 1.2/1.3 termination"]);
+
+    // Database strings follow the chosen engine, so the table never names a product the bank is not using.
+    var E = m.eng, SQL = E.db, DBOS = E.os, dbSoft = E.soft;
+    if (env === "uat") {
+      var uData = s.uatperf ? Math.max(4, Math.round(m.whData * 0.6)) : 2;
+      var uVol = r1(0.2 + uData + 0.5 + 0.5);
+      out.push(["Database", "Primary (operational and warehouse)", 1, 16, 128,
+        "200 GB OS + " + tb(uData) + " data + 500 GB log + 500 GB tempdb", uVol, null, DBOS, SQL, dbSoft]);
+      if (m.ha) out.push(["Database", "Readable secondary", 1, 16, 128,
+        "Identical to the primary", uVol, null, DBOS, SQL, dbSoft + ", as a " + E.read]);
+    } else if (env === "dr") {
+      out.push(["Database", "Operational — asynchronous replica", 1, m.oltpCores, m.oltpRAM,
+        "200 GB OS + " + tb(m.oltpData) + " data + " + tb(m.oltpLog) + " log + " + tb(m.oltpTemp) + " tempdb",
+        m.oltpVol, null, DBOS, SQL, dbSoft + ", as an " + E.async]);
+      out.push(["Database", "Data warehouse — asynchronous replica", 1, m.whCores, m.whRAM,
+        "200 GB OS + " + tb(m.whData) + " data + " + tb(m.whLog) + " log + " + tb(m.whTemp) + " tempdb",
+        m.whVol, null, DBOS, SQL, dbSoft + ", as an " + E.async]);
+    } else {
+      out.push(["Database", "Operational — primary", 1, m.oltpCores, m.oltpRAM,
+        "200 GB OS + " + tb(m.oltpData) + " data + " + tb(m.oltpLog) + " log + " + tb(m.oltpTemp) + " tempdb (separate volumes)",
+        m.oltpVol, null, DBOS, SQL, dbSoft]);
+      if (m.ha) out.push(["Database", "Operational — synchronous secondary", 1, m.oltpCores, m.oltpRAM,
+        "Identical to the primary", m.oltpVol, null, DBOS, SQL, dbSoft + ", as a " + E.ha + " and the backup source"]);
+      out.push(["Database", "Data warehouse — primary", 1, m.whCores, m.whRAM,
+        "200 GB OS + " + tb(m.whData) + " data + " + tb(m.whLog) + " log + " + tb(m.whTemp) + " tempdb (separate volumes)",
+        m.whVol, null, DBOS, SQL + " — " + E.dbNote, dbSoft]);
+      if (m.whReadable) out.push(["Database", "Data warehouse — readable secondary", m.whReadable, m.whCores, m.whRAM,
+        "Identical to the primary", m.whVol, null, DBOS, SQL, dbSoft + ", as a " + E.read]);
+    }
+
+    out.push(["Messaging", "RabbitMQ broker", env === "uat" || !m.ha ? 1 : m.rabbitNodes, 4, 16,
+      "100 GB OS + 200 GB message store (SSD)", 0.3, "broker", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "RabbitMQ 3.13+ with quorum queues, Erlang/OTP 26, management and Prometheus plug-ins"]);
+
+    out.push(["Cache", "Redis", env === "uat" || !m.ha ? 1 : 3, 4, env === "uat" ? 16 : m.redisGiB,
+      "100 GB OS + 100 GB (SSD, snapshots only)", 0.2, "cache", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "Redis 7.2+ in Sentinel or cluster mode, eviction policy allkeys-lru. Cache only — never a system of record"]);
+
+    out.push(["Storage", "S3-compatible object store", env === "uat" || !m.ha ? 1 : m.objNodes, 4, 16,
+      env === "uat" ? "100 GB OS + 1 TB" : "100 GB OS + " + tb(m.objPerNode) + " each",
+      env === "uat" ? 1.1 : r1(0.1 + m.objPerNode), "objstore", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "MinIO, or the bank's S3-compatible store, with Signature V4, versioning and server-side encryption"]);
+
+    out.push(["Monitoring", "Observability stack", !m.ha ? 1 : env === "dc" ? 3 : env === "dr" ? 2 : 1, 8, 32,
+      env === "uat" ? "100 GB OS + 1 TB (SSD)" : "100 GB OS + 2 TB retention (SSD)",
+      env === "uat" ? 1.1 : 2.1, "observ", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "Prometheus 2.5x, Grafana 11+, OpenTelemetry Collector, Loki or the bank's log platform"]);
+
+    if (env !== "uat") out.push(["Repository", k8s ? "Container registry" : "Artifact repository",
+      !m.ha ? 1 : env === "dc" ? (k8s ? 2 : 1) : 1, 4, 16, "100 GB OS + 2 TB (SSD)", 2.1, "repo",
+      "RHEL 9.x · Ubuntu 22.04 LTS",
+      k8s ? "Harbor 2.10+, or the bank's registry, with image signing and vulnerability scanning"
+          : "JFrog Artifactory or Nexus, holding JAR artefacts rather than container images"]);
+
+    out.push(["Management", k8s ? "Bastion / deployment host" : "Configuration management / bastion", 1,
+      k8s ? 4 : 8, env === "uat" && k8s ? 8 : 16,
+      k8s ? "200 GB OS (SSD)" : "200 GB OS + 100 GB (SSD)", k8s ? 0.2 : 0.3, "bastion",
+      "RHEL 9.x · Ubuntu 22.04 LTS",
+      k8s ? "kubectl 1.29+, Helm 3.14+, Flyway 10+, the bank's secret-store CLI, OpenSSH"
+          : "Ansible (or Puppet/Chef) control node, the bank's secret-store CLI, Flyway 10+, OpenSSH"]);
+
+    if (s.gpu && env !== "uat") out.push(["Inference", "GPU inference server", 2, 32, 256,
+      "200 GB OS + 2 TB NVMe model store", 2.2, null, "RHEL 9.x · Ubuntu 22.04 LTS",
+      "NVIDIA driver, CUDA 12.x, container toolkit, inference server (vLLM, TGI or NVIDIA NIM). 2 × L40S 48 GB or H100 80 GB per server"]);
+
+    if (env === "dc") {
+      var dbTB = out.reduce(function (a, r) { return a + (r[0] === "Database" ? r[2] * r[6] : 0); }, 0);
+      out.push(["Backup", "Backup target", 1, 8, 32,
+        "100 GB OS + " + tb(Math.round(0.75 * (dbTB + m.objUsable))) + " (nearline acceptable)",
+        r1(0.1 + Math.round(0.75 * (dbTB + m.objUsable))), "backup",
+        "RHEL 9.x · Windows Server 2022 · or the bank's appliance",
+        "The bank's enterprise backup product (Veeam, Commvault, NetBackup) with database and object-store agents"]);
+    }
+    return out;
+  }
+
+  function totals(rs, s) {
+    var t = { srv: 0, cores: 0, ram: 0, tb: 0 }, d = { srv: 0, cores: 0, ram: 0, tb: 0 };
+    rs.forEach(function (r) {
+      var reused = r[7] && s.has[r[7]];
+      if (!reused) { t.srv += r[2]; t.cores += r[2] * r[3]; t.ram += r[2] * r[4]; t.tb += r[2] * r[6]; }
+      if (!r[7]) { d.srv += r[2]; d.cores += r[2] * r[3]; d.ram += r[2] * r[4]; d.tb += r[2] * r[6]; }
+    });
+    return { proc: t, dedicated: d };
+  }
+
+  // ---- Rendering ---------------------------------------------------------------------------
+  var ENVS = [
+    { k: "uat", name: "UAT", note: "One instance per service against a two-node database cluster. The readable secondary is deliberate: without it the 85% read path is never exercised before production." },
+    { k: "dc", name: "Production — Primary Data Centre", note: "The live service, sized to hold the burst ceiling with one application host unavailable." },
+    { k: "dr", name: "Production — Disaster Recovery", note: "Warm standby. Data replicates continuously; queues rebuild from the service outboxes and the cache rebuilds from source." }
+  ];
+
+  function esc(x) { return String(x).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  function render() {
+    var s = state, m = model(s), out = document.getElementById("out"), html = "";
+    var grand = { proc: { srv: 0, cores: 0, ram: 0, tb: 0 }, dedicated: { srv: 0, cores: 0, ram: 0, tb: 0 } };
+    window.__csv = [];
+
+    document.getElementById("basis").textContent =
+      fmt(s.users) + " users · " + s.conc + "% concurrency · " + fmt(s.cust) + " customers · " +
+      (s.opt === "k8s" ? "with Kubernetes" : "without Kubernetes");
+
+    html += '<section class="derived"><h2>Derived workload</h2><dl class="dgrid">' +
+      tile("Peak concurrent users", fmt(m.concurrent)) +
+      tile("Peak request rate", fmt(m.peakRPS), "req/s") +
+      tile("Read / write split", fmt(m.readRPS) + " / " + fmt(m.writeRPS), "req/s") +
+      tile("Service instances at peak", fmt(m.peakInst), "of " + fmt(m.ceilInst) + " ceiling") +
+      tile("Compute at peak", Math.round(m.peakCores), "cores, " + Math.round(m.peakMem) + " GiB") +
+      tile("Posting rows held", r1(m.rowsBn), "billion") +
+      tile("Peak DB connections", "~" + fmt(m.dbConns)) +
+      tile("CPU target per pod", Math.round(m.utilTarget * 100) + "%", "at p95 " + SLIDERS.api(s.api)) +
+      "</dl></section>";
+
+    ENVS.forEach(function (e) {
+      if (!s.envs[e.k]) return;
+      var rs = rows(e.k, s, m), t = totals(rs, s);
+      ["proc", "dedicated"].forEach(function (key) {
+        ["srv", "cores", "ram", "tb"].forEach(function (f) { grand[key][f] += t[key][f]; });
+      });
+
+      html += '<h3 class="env">' + esc(e.name) + "</h3><p class=\"envnote\">" + esc(e.note) + "</p>";
+      html += '<div class="tscroll"><table><thead><tr>' +
+        "<th>Server type</th><th class=\"n\">Qty</th><th class=\"n\">Cores</th><th class=\"n\">RAM</th>" +
+        "<th>Hard drive / volumes</th><th>OS supported</th><th>Database supported</th><th>Software required</th>" +
+        "</tr></thead><tbody>";
+
+      window.__csv.push([e.name], ["Server type", "Qty", "Cores each", "RAM GiB each", "Volumes each", "OS supported", "Database supported", "Software required", "Status"]);
+
+      rs.forEach(function (r) {
+        var reused = r[7] && s.has[r[7]];
+        html += '<tr' + (reused ? ' class="reused"' : "") + '>' +
+          '<td class="srv"><span class="cat">' + esc(r[0]) + "</span>" + esc(r[1]) +
+          (reused ? ' <span class="pill r">reused</span>' : (r[7] ? "" : ' <span class="pill p">dedicated</span>')) + "</td>" +
+          '<td class="n">' + r[2] + "</td><td class=\"n\">" + r[3] + '</td><td class="n">' + r[4] + " GiB</td>" +
+          "<td>" + esc(r[5]) + "</td><td>" + esc(r[8]) + "</td><td>" + esc(r[9] || "Not applicable") + "</td>" +
+          "<td>" + esc(r[10] || "") + "</td></tr>";
+        window.__csv.push([r[0] + " — " + r[1], r[2], r[3], r[4], r[5], r[8], r[9] || "Not applicable", r[10] || "", reused ? "Reused" : (r[7] ? "Procure" : "Dedicated")]);
+      });
+
+      html += '</tbody><tfoot><tr><td>Total to procure</td><td class="n">' + t.proc.srv +
+        '</td><td class="n">' + fmt(t.proc.cores) + '</td><td class="n">' + fmt(t.proc.ram) +
+        " GiB</td><td colspan=\"4\">" + tb(t.proc.tb) + " usable &nbsp;·&nbsp; dedicated capacity alone: " +
+        t.dedicated.srv + " servers, " + fmt(t.dedicated.cores) + " cores</td></tr></tfoot></table></div>";
+      window.__csv.push(["TOTAL TO PROCURE", t.proc.srv, t.proc.cores, t.proc.ram, tb(t.proc.tb), "", "", "", ""], []);
+    });
+
+    html += '<section class="grand"><h3>All selected environments</h3><div class="tscroll"><table><thead><tr>' +
+      "<th>Scope</th><th class=\"n\">Servers</th><th class=\"n\">Cores</th><th class=\"n\">RAM</th><th class=\"n\">Storage</th>" +
+      "</tr></thead><tbody>" +
+      grow("Procuring everything", grand.proc) +
+      grow("Dedicated capacity only", grand.dedicated) +
+      "</tbody></table></div></section>";
+
+    html += '<section class="notes"><h3>How these figures are derived</h3><ul>' +
+      "<li><b>The latency budget sets how hard a pod may be driven.</b> A looser p95 permits more queueing, so the autoscaler holds a higher CPU target and each pod serves more requests — but a pod's capacity is fixed by CPU, so the gain saturates. Four times the budget is nowhere near four times the throughput.</li>" +
+      "<li><b>Application hosts</b> hold the burst ceiling, or expected peak with one host down, whichever is larger. " +
+      (s.opt === "vm" ? "Without Kubernetes a further 25% covers static provisioning, lost bin-packing and coarser failure granularity."
+                      : "16 cores to 64 GiB matches the services' own 500 millicore to 1 GiB request ratio, so neither dimension strands first.") + "</li>" +
+      "<li><b>Quantities of three or four</b> are quorum and erasure-coding minimums, not load: etcd, RabbitMQ and Redis Sentinel need a majority; erasure coding needs four nodes to survive one loss.</li>" +
+      "<li><b>Warehouse cores</b> scale with the square root of read rate times row count, because columnstore scans parallelise across cores. <b>Operational database cores</b> scale with write rate, where connection handling and log flush dominate.</li>" +
+      "<li><b>Every figure is a planning assumption.</b> Confirm the bank's real concurrency profile and volumes in sprint 0, then validate against the service levels with a load test.</li>" +
+      "</ul></section>";
+
+    html += guideHTML();
+
+    out.innerHTML = html;
+    updateStatus(grand);
+  }
+
+  // Total cores across the selected environments, for a hypothetical change to one input.
+  // Used to tell the user what a control is actually worth before they drag it.
+  function coresWith(over) {
+    var s = Object.assign({}, state, over || {});
+    var m = model(s), c = 0;
+    ENVS.forEach(function (e) { if (s.envs[e.k]) { c += totals(rows(e.k, s, m), s).proc.cores; } });
+    return c;
+  }
+
+  // For all four targets a higher number is the easier-on-hardware direction: a longer time
+  // budget, or a better cache hit rate. So "easier" is always one step up.
+  // Compared against the whole remaining range in each direction, not one notch. A single step
+  // steps over thresholds: at a 2-second message budget one notch saves nothing, while going
+  // all the way to 20 saves 16 cores, and the second of those is what someone wants to know.
+  function effectOf(key) {
+    var el = document.getElementById(key);
+    var min = Number(el.min), max = Number(el.max), now = state[key];
+    var base = coresWith({}), up = coresWith(mk(key, max)), down = coresWith(mk(key, min));
+    var fmtv = SLIDERS[key], parts = [];
+    if (now >= max) {
+      parts.push("Already at the loosest setting");
+    } else if (up === base) {
+      parts.push("Nothing further to save past " + fmtv(now));
+    } else {
+      parts.push((base - up) + " cores saved at " + fmtv(max));
+    }
+    if (now > min && down !== base) {
+      parts.push("+" + (down - base) + " cores at " + fmtv(min));
+    }
+    return parts.join(" · ");
+  }
+  function mk(k, v) { var o = {}; o[k] = v; return o; }
+
+  // Plain-language guide to every input. Static, but rendered with the results so it sits
+  // at the foot of the column the figures are in.
+  // [target, input name, what it means, what it changes]. `target` is a CSS selector for the
+  // control this describes; the same row feeds both its hover tooltip and the table at the
+  // foot of the page, so the two can never say different things.
+  var GUIDE = [
+    ["Workload", [
+      ["#users", "Provisioned users",
+        "How many people have an account, whether or not they are using it right now — the size of the licence list.",
+        "On its own, very little. What matters is how many are signed in at the same time, which is the next control."],
+      ["#conc", "Peak concurrency",
+        "Of those people, the share actually using the system at the busiest moment of the day.",
+        "<b>The most important input on this page.</b> 10,000 users at 30% is 3,000 people at once, and nearly every figure here follows from that 3,000 rather than from the 10,000."],
+      ["#cust", "Customers (client entities)",
+        "How many companies the bank banks.",
+        "How much data there is: database size, cache memory, document storage. It barely touches the application servers, because a screen costs the same to draw whether the bank has 50,000 customers or 500,000."],
+      ["#rpm", "Requests per active user per minute",
+        "How busy one person is — screens opened, drill-downs, things saved. Twelve is someone working steadily, not hammering the keyboard.",
+        "Multiplied by the concurrent users, this is the request rate the whole system has to carry."],
+      ["#readpct", "Read share of traffic",
+        "How much of the work is looking things up, against changing them.",
+        "Where the load lands. Reads are served by the warehouse and the cache; writes go to the operational database. Raising this shifts work from one to the other rather than adding it."]
+    ]],
+    ["Performance targets", [
+      ["#api", "API p95",
+        "How long a screen is allowed to take. “p95” means 95 out of every 100 requests finish inside this time; the slowest 1 in 20 may take longer.",
+        "How hard each server may be driven before it needs a neighbour. A looser limit means fewer servers — but the gain runs out around 2 seconds, because a server's capacity is set by its CPU, not by how long you are willing to wait."],
+      ["#drill", "Drill page",
+        "How long opening a drill-down into underlying transactions may take.",
+        "The data warehouse, and nothing else. That is where the large scans happen, and a longer allowance means each scan needs less parallel horsepower."],
+      ["#msg", "Message processing",
+        "How long a background event — a booking, a feed update — may sit before it is handled.",
+        "The message broker alone. A longer allowance tolerates a deeper backlog, so fewer broker nodes are needed to drain it in time."],
+      ["#hit", "Cache hit rate",
+        "How often a repeated read can be answered from memory instead of going to the database.",
+        "<b>The sharpest of the four targets.</b> At 80%, only 1 read in 5 reaches the warehouse. At 60% that doubles and puts the cores straight back onto it — which is why this is a target to engineer for, not to hope for."]
+    ]],
+    ["Data volumes", [
+      ["#post", "Postings per day",
+        "How many transaction lines land each day.",
+        "The size of the warehouse, together with the retention setting below."],
+      ["#hist", "History retained",
+        "How far back the warehouse keeps transaction-level detail.",
+        "Warehouse storage, almost directly — halve the months and you roughly halve the terabytes. Cores move far less, because a scan is bounded by the slice it reads, not by everything kept."]
+    ]],
+    ["Availability", [
+      ["#ha-seg", "Availability",
+        "Whether this is a production deployment that survives a server failure, or a pilot that does not.",
+        "<b>More than anything else on this page.</b> Highly available means paired databases, quorum counts of three for the broker, cache and control plane, and a three-host application floor. Pilot means a single node of each. It is not half the size: dropping the readable standby puts the read path on the warehouse primary, which then needs about 30% more cores. What a pilot gives up is failover, the drill budget and the 99.5% target — so it is a way to try the product, not to run it."]
+    ]],
+    ["Database engine", [
+      ["#engine-seg", "Database engine",
+        "Which database the bank will run. It changes the engine named in every database row, the operating systems those servers support, and the software to install on them.",
+        "<b>The warehouse, through one thing: whether the engine has a columnar store.</b> SQL Server Enterprise includes one. Oracle needs the separately licensed In-Memory option and PostgreSQL needs the Citus extension, so without those the same drill scans need about 1.5x the cores and the postings fact compresses about 1.8x less. Those two multipliers are planning estimates and want a benchmark. <b>Oracle is not supported by the product today</b> — see architecture/oracle-support-gap.md."]
+    ]],
+    ["Pod and node sizing", [
+      ["#podcpu", "CPU request per pod",
+        "How much processor each copy of a service reserves for itself. Everything in the application tier is counted up from this one number.",
+        "<b>The softest number on this page and the one with the most leverage.</b> It has never been measured against a running service — it is a sensible starting guess. Dropping it from 500m to 300m takes the production pool from 5 hosts to 3. A load test is what settles it."],
+      ["#podmem", "Memory request per pod",
+        "How much memory each copy of a service reserves. The edge gateway is the exception at 512 MiB, because it holds no database connections.",
+        "The memory side of the host pool. It rarely decides the host count, because these services run out of processor before they run out of memory — but set it too low and the JVM is killed under load."],
+      ["#nodecpu", "Cores per application host",
+        "The size of one server in the application pool. Memory follows at four times the cores.",
+        "Server count and total cores, in opposite directions. Many small hosts waste cores on per-host overhead; few large ones waste them on the three-host minimum and lose more capacity when one fails. Around 12 to 24 cores is usually the sweet spot."]
+    ]],
+    ["Deployment and scope", [
+      ["#opt-seg", "With / without Kubernetes",
+        "Whether the services run on Kubernetes, which starts and stops copies by itself as load moves, or as ordinary programs on a fixed set of servers.",
+        "Without it you must buy for the busiest moment of the day and leave it running all day, so the application tier grows by about a quarter. Total cores come out much the same; what you lose is automatic scaling, self-healing and rolling release."],
+      ["#env-checks", "Environments",
+        "Which of the three sets of hardware to count: the test environment, the live site, and the standby site.",
+        "Everything, proportionally. Each is a complete environment in its own right."],
+      ["#uatperf", "Size UAT for load testing",
+        "Makes the test environment large enough that a load test run there tells you something about the live site.",
+        "Adds application hosts and warehouse storage to UAT. Without it, UAT proves the software works, not that it performs."],
+      ["#gpu", "On-premises model serving",
+        "Whether the AI features run on the bank's own GPUs instead of calling an approved outside service.",
+        "Adds two GPU servers per site. Choose it when the bank will not allow any traffic to leave the data centre."],
+      ["#reuse-box", "Bank already operates",
+        "Tick each capability the bank already runs — load balancers, object storage, monitoring, backup, and so on.",
+        "<b>The biggest single lever on server count, and it costs nothing.</b> Ticked lines drop out of the total, because the product connects to what the bank has instead of asking for another one."]
+    ]]
+  ];
+
+  // Native HTML tooltips, from the same rows. Re-applied after any panel rebuild.
+  function applyTooltips() {
+    GUIDE.forEach(function (grp) {
+      grp[1].forEach(function (r) {
+        var el = document.querySelector(r[0]);
+        if (!el) return;
+        var text = r[1] + " — " + stripTags(r[2]) + "\n\nWhat it changes: " + stripTags(r[3]);
+        // Put it on the whole field or group, so the label and the control both carry it.
+        var host = el.closest(".field") || el.closest("label") || el.closest(".checks") || el;
+        host.setAttribute("title", text);
+        if (host !== el) { el.setAttribute("title", text); }
+      });
+    });
+  }
+  function stripTags(s) { return s.replace(/<[^>]+>/g, ""); }
+
+  function guideHTML() {
+    var h = '<section class="guide"><h3>What each input does</h3>';
+    GUIDE.forEach(function (grp) {
+      h += '<h4>' + esc(grp[0]) + "</h4>";
+      h += '<div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody>';
+      grp[1].forEach(function (r) {
+        h += "<tr><td><b>" + esc(r[1]) + "</b></td><td>" + r[2] + "</td><td>" + r[3] + "</td></tr>";
+      });
+      h += "</tbody></table></div>";
+    });
+    return h + "</section>";
+  }
+
+  function tile(label, value, sub) {
+    return "<div><dt>" + esc(label) + "</dt><dd>" + esc(value) +
+      (sub ? " <small>" + esc(sub) + "</small>" : "") + "</dd></div>";
+  }
+  function grow(label, t) {
+    return "<tr><td>" + esc(label) + '</td><td class="n">' + t.srv + '</td><td class="n">' +
+      fmt(t.cores) + '</td><td class="n">' + fmt(t.ram) + ' GiB</td><td class="n">' + tb(t.tb) + "</td></tr>";
+  }
+
+  function updateStatus(grand) {
+    var el = document.getElementById("status");
+    var want = (SCENARIO.expect || {})[state.opt];
+    var figuresHold = !want || (grand.proc.srv === want.srv && grand.proc.cores === want.cores);
+    if (atScenario() && figuresHold) {
+      el.className = "status match";
+      el.textContent = SCENARIO.label;
+    } else if (atScenario() && !figuresHold) {
+      el.className = "status diff";
+      el.textContent = "Model has drifted from " + want.srv + "/" + want.cores +
+        ": now " + grand.proc.srv + " servers · " + fmt(grand.proc.cores) + " cores";
+    } else {
+      el.className = "status diff";
+      el.textContent = grand.proc.srv + " servers · " + fmt(grand.proc.cores) + " cores";
+    }
+  }
+
+  // ---- Controls ------------------------------------------------------------------------------
+  var SLIDERS = {
+    users: function (v) { return fmt(v); },
+    conc: function (v) { return v + "%"; },
+    cust: function (v) { return fmt(v); },
+    rpm: function (v) { return v; },
+    readpct: function (v) { return v + " / " + (100 - v); },
+    api: function (v) { return v >= 1000 ? (v / 1000) + " s" : v + " ms"; },
+    drill: function (v) { return v + " s"; },
+    msg: function (v) { return v + " s"; },
+    hit: function (v) { return "> " + v + "%"; },
+    podcpu: function (v) { return v + "m"; },
+    podmem: function (v) { return v >= 1024 ? (v / 1024) + " GiB" : v + " MiB"; },
+    nodecpu: function (v) { return v + " cores"; },
+    post: function (v) { return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M"; },
+    hist: function (v) { return v + " months"; }
+  };
+  Object.keys(SLIDERS).forEach(function (k) {
+    var el = document.getElementById(k);
+    el.addEventListener("input", function () {
+      state[k] = Number(el.value);
+      syncLabels();
+      render();
+    });
+  });
+
+  function syncLabels() {
+    Object.keys(SLIDERS).forEach(function (k) {
+      document.getElementById(k).value = state[k];
+      document.getElementById(k + "-v").textContent = SLIDERS[k](state[k]);
+    });
+    document.getElementById("conc-hint").textContent =
+      Math.round(state.users * state.conc / 100).toLocaleString("en-US") + " users active at peak";
+    var mm = model(state);
+    document.getElementById("api-hint").textContent =
+      "Autoscaler holds " + Math.round(mm.utilTarget * 100) + "% CPU · " + mm.podRPS +
+      " req/s per pod. " + effectOf("api");
+    document.getElementById("hit-hint").textContent =
+      mm.dbReadRPS.toLocaleString("en-US") + " req/s reach the warehouse. " + effectOf("hit");
+    document.getElementById("drill-hint").textContent = effectOf("drill");
+    document.getElementById("msg-hint").textContent = effectOf("msg");
+    document.getElementById("podcpu-hint").textContent =
+      "Never profiled — the softest number here. Peak " + Math.round(mm.peakCores) +
+      " cores, burst ceiling " + Math.round(mm.ceilCores) + " cores";
+    var pool = mm.nodesDC * mm.nodeCpu, spare = (mm.nodesDC - 1) * (mm.nodeCpu - 2);
+    document.getElementById("nodecpu-hint").textContent =
+      mm.nodesDC + " hosts × " + mm.nodeCpu + " = " + pool + " cores in production. " +
+      (spare >= mm.ceilCores ? "Holds the burst ceiling with one host down"
+        : spare >= mm.peakCores ? "Holds expected peak with one host down, not the burst ceiling"
+        : "WARNING: one host down drops below expected peak");
+    document.getElementById("opt-hint").textContent = state.opt === "k8s"
+      ? "Ships today: Helm chart and container images, linted and rendered in CI."
+      : "Needs deployment automation the product does not contain today — process supervision, config delivery, service discovery and rolling release.";
+    document.getElementById("opt-k8s").setAttribute("aria-pressed", state.opt === "k8s");
+    document.getElementById("opt-vm").setAttribute("aria-pressed", state.opt === "vm");
+    document.querySelectorAll("#engine-seg button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.dataset.engine === state.engine);
+    });
+    document.querySelectorAll("#ha-seg button").forEach(function (b) {
+      b.setAttribute("aria-pressed", (b.dataset.ha === "1") === state.ha);
+    });
+    document.getElementById("ha-hint").textContent = state.ha
+      ? "Paired databases, quorum tiers, three application hosts minimum."
+      : "Single nodes throughout. No failover, no readable standby, and the warehouse primary serves the read path. Not a production deployment.";
+    var E = ENGINES[state.engine];
+    document.getElementById("engine-hint").textContent = E.support + ". " +
+      (E.columnar ? "Columnar store included."
+        : "No columnar store, so the warehouse carries " + E.whCpu + "x the cores and " + E.whStore + "x the storage — both estimates, not benchmarks.");
+    // Drive the checkboxes from state too, so the markup's own attributes never decide
+    // what a variant of this file opens with.
+    ["uat", "dc", "dr"].forEach(function (k) {
+      var el = document.getElementById("env-" + k);
+      el.checked = state.envs[k];
+      el.closest("label").classList.toggle("on", state.envs[k]);
+    });
+    ["uatperf", "gpu"].forEach(function (k) {
+      var el = document.getElementById(k);
+      el.checked = state[k];
+      el.closest("label").classList.toggle("on", state[k]);
+    });
+    buildReuse();
+  }
+
+  document.querySelectorAll("#engine-seg button").forEach(function (b) {
+    b.addEventListener("click", function () { state.engine = b.dataset.engine; syncLabels(); render(); });
+  });
+
+  document.querySelectorAll("#ha-seg button").forEach(function (b) {
+    b.addEventListener("click", function () { state.ha = b.dataset.ha === "1"; syncLabels(); render(); });
+  });
+
+  document.getElementById("opt-k8s").addEventListener("click", function () { state.opt = "k8s"; syncLabels(); render(); });
+  document.getElementById("opt-vm").addEventListener("click", function () { state.opt = "vm"; syncLabels(); render(); });
+
+  ["uat", "dc", "dr"].forEach(function (k) {
+    var el = document.getElementById("env-" + k);
+    el.addEventListener("change", function () {
+      state.envs[k] = el.checked;
+      el.closest("label").classList.toggle("on", el.checked);
+      render();
+    });
+  });
+  ["uatperf", "gpu"].forEach(function (k) {
+    var el = document.getElementById(k);
+    el.addEventListener("change", function () {
+      state[k] = el.checked;
+      el.closest("label").classList.toggle("on", el.checked);
+      render();
+    });
+  });
+
+  function buildReuse() {
+    var box = document.getElementById("reuse-box"), html = "";
+    REUSABLE.forEach(function (r) {
+      if (r.only && r.only !== state.opt) return;
+      html += '<label' + (state.has[r.k] ? ' class="on"' : "") + '><input type="checkbox" data-reuse="' +
+        r.k + '"' + (state.has[r.k] ? " checked" : "") + '><span class="tx">' + esc(r.label) + "</span></label>";
+    });
+    box.innerHTML = html;
+    applyTooltips();
+    box.querySelectorAll("input[data-reuse]").forEach(function (el) {
+      el.addEventListener("change", function () {
+        state.has[el.dataset.reuse] = el.checked;
+        el.closest("label").classList.toggle("on", el.checked);
+        render();
+      });
+    });
+  }
+
+  document.getElementById("reset").addEventListener("click", function () {
+    loadScenario();
+    ["uatperf", "gpu"].forEach(function (k) {
+      var el = document.getElementById(k);
+      el.checked = state[k];
+      el.closest("label").classList.toggle("on", state[k]);
+    });
+    ["uat", "dc", "dr"].forEach(function (k) {
+      var el = document.getElementById("env-" + k);
+      el.checked = state.envs[k];
+      el.closest("label").classList.toggle("on", state.envs[k]);
+    });
+    syncLabels(); render();
+  });
+
+  document.getElementById("copy-csv").addEventListener("click", function () {
+    var btn = this;
+    var csv = (window.__csv || []).map(function (r) {
+      return r.map(function (c) {
+        c = String(c == null ? "" : c);
+        return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c;
+      }).join(",");
+    }).join("\n");
+    var done = function (msg) { btn.textContent = msg; setTimeout(function () { btn.textContent = "Copy all tables as CSV"; }, 1800); };
+    try {
+      navigator.clipboard.writeText(csv).then(function () { done("Copied — paste into a spreadsheet"); },
+        function () { done("Could not copy — select the tables instead"); });
+    } catch (e) { done("Could not copy — select the tables instead"); }
+  });
+
+  syncLabels();
+  render();
+})();
+</script>
+
+</body>
+</html>
