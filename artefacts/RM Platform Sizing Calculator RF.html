@@ -1,0 +1,2453 @@
+<!DOCTYPE html>
+<!-- saved from url=(0082)file:///D:/workspace_sv/techdebt-cleanup/artefacts/hardware-sizing-calculator.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  RM Platform infrastructure sizing calculator, on Oracle. This file is the published document baseline.
+
+  Oracle is not supported by the product today. The operational databases are parameterized
+  across SQL Server, PostgreSQL and H2; the warehouse is SQL Server alone. See
+  architecture/oracle-support-gap.md before quoting any of this as deliverable. Oracle also
+  carries no columnar store without the separately licensed In-Memory option, so the
+  warehouse takes 1.5x the cores and 1.8x the storage of the SQL Server figures - both
+  planning estimates that need a benchmark.
+
+  The SCENARIO block holds the values this file opens with and is the only thing that
+  differs between the five sizing files. expect guards against the model drifting from the
+  figures the document states.
+-->
+<title>RM Platform Sizing Calculator</title>
+<link rel="stylesheet" href="./RM Platform Sizing Calculator RF_files/css2">
+<style>
+  /* Layout: a sticky control rail on the left, results scrolling beside it; one column under 900px. */
+  :root {
+    --bg: #f4f4f2;
+    --surface: #ffffff;
+    --surface-2: #ececeb;
+    --line: #d6d6d3;
+    --line-strong: #b4b4b0;
+    --fg: #1c1c1b;
+    --fg-dim: #5e5e5a;
+    --fg-faint: #86868180;
+    --accent: #8a5a12;
+    --accent-soft: #f0e3cd;
+    --reuse: #2f6b4f;
+    --reuse-soft: #dfeee6;
+    --procure: #9c3722;
+    --procure-soft: #f6e2dd;
+    --font-display: 'IBM Plex Sans Condensed', 'Arial Narrow', system-ui, sans-serif;
+    --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    --font-data: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17171a;
+      --surface: #202024;
+      --surface-2: #27272c;
+      --line: #35353b;
+      --line-strong: #4e4e56;
+      --fg: #ececed;
+      --fg-dim: #a0a0a4;
+      --fg-faint: #6a6a7080;
+      --accent: #e0ad5d;
+      --accent-soft: #3a2e18;
+      --reuse: #6cc49a;
+      --reuse-soft: #1d3329;
+      --procure: #e89078;
+      --procure-soft: #3a211b;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17171a;
+    --surface: #202024;
+    --surface-2: #27272c;
+    --line: #35353b;
+    --line-strong: #4e4e56;
+    --fg: #ececed;
+    --fg-dim: #a0a0a4;
+    --fg-faint: #6a6a7080;
+    --accent: #e0ad5d;
+    --accent-soft: #3a2e18;
+    --reuse: #6cc49a;
+    --reuse-soft: #1d3329;
+    --procure: #e89078;
+    --procure-soft: #3a211b;
+    color-scheme: dark;
+  }
+
+  html { color-scheme: light; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1340px;
+    margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 28px 56px;
+  }
+
+  header.page { border-bottom: 2px solid var(--fg); padding-bottom: 14px; margin-bottom: 22px; }
+  header.page h1 {
+    font-family: var(--font-display);
+    font-size: clamp(26px, 4.4vw, 40px);
+    line-height: 1.04;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  header.page p { margin: 0; color: var(--fg-dim); max-width: 68ch; }
+  .basis {
+    font-family: var(--font-data);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin-top: 10px;
+  }
+
+  .cols { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 26px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+
+  .rail { position: sticky; top: env(safe-area-inset-top, 0px); display: flex; flex-direction: column; gap: 16px; }
+  @media (max-width: 900px) { .rail { position: static; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); padding: 14px 15px 16px; }
+  .panel > h2 {
+    font-family: var(--font-data);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin: 0 0 12px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .field { margin-bottom: 15px; }
+  .field:last-child { margin-bottom: 0; }
+  .field > label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+  /* Dotted underline marks a label that carries a hover explanation. */
+  .field .nm {
+    font-size: 12.5px; color: var(--fg); cursor: help;
+    text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px;
+  }
+  .checks[title] label, .seg[title] { cursor: help; }
+  .field .vl { font-family: var(--font-data); font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+  input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+  input[type="number"] {
+    width: 100%; margin: 0; padding: 6px 7px;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--line-strong);
+    font-family: var(--font-data); font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .hint { font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+
+  .seg { display: flex; border: 1px solid var(--line-strong); }
+  .seg button {
+    flex: 1; min-width: 0; padding: 8px 6px; border: 0; cursor: pointer;
+    background: var(--surface); color: var(--fg-dim);
+    font-family: var(--font-body); font-size: 12px; font-weight: 500;
+  }
+  .seg button + button { border-left: 1px solid var(--line-strong); }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); font-weight: 600; }
+
+  .checks { display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .checks label {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    background: var(--surface); cursor: pointer; font-size: 12.5px;
+  }
+  .checks label:hover { background: var(--surface-2); }
+  .checks input { accent-color: var(--reuse); margin: 0; flex: none; }
+  .checks .tx { min-width: 0; }
+  .checks label.on .tx { color: var(--reuse); }
+
+  .btn {
+    width: 100%; padding: 8px; cursor: pointer; background: var(--surface-2);
+    border: 1px solid var(--line-strong); color: var(--fg);
+    font-family: var(--font-body); font-size: 12px; font-weight: 500;
+  }
+  .btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .btn + .btn { margin-top: 7px; }
+
+  .derived { background: var(--fg); color: var(--bg); padding: 15px 16px; margin-bottom: 22px; }
+  .derived h2 {
+    font-family: var(--font-data); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; margin: 0 0 11px; opacity: 0.62;
+  }
+  .dgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 13px 16px; }
+  .dgrid div { min-width: 0; }
+  .dgrid dt { font-size: 11px; opacity: 0.66; margin-bottom: 1px; }
+  .dgrid dd {
+    margin: 0; font-family: var(--font-data); font-size: 19px; font-weight: 500;
+    font-variant-numeric: tabular-nums; line-height: 1.15;
+  }
+  .dgrid dd small { font-size: 11px; font-weight: 400; opacity: 0.66; }
+
+  h3.env {
+    font-family: var(--font-display); font-size: 21px; margin: 26px 0 3px;
+    padding-top: 15px; border-top: 1px solid var(--line-strong);
+  }
+  h3.env:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .envnote { color: var(--fg-dim); font-size: 12.5px; margin: 0 0 11px; }
+
+  .tscroll { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 12.5px; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    font-family: var(--font-data); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--fg-dim); font-weight: 500; background: var(--surface-2);
+    position: sticky; top: 0; border-bottom: 1px solid var(--line-strong);
+  }
+  td.n, th.n { text-align: right; font-family: var(--font-data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr:hover td { background: var(--surface-2); }
+  tbody tr.reused td { color: var(--fg-dim); }
+  tbody tr.reused td.srv { text-decoration: line-through; text-decoration-color: var(--fg-faint); }
+  tfoot td { font-weight: 600; border-top: 2px solid var(--fg); border-bottom: 0; background: var(--surface); }
+  .cat {
+    font-family: var(--font-data); font-size: 9.5px; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--fg-dim); display: block; margin-bottom: 1px;
+  }
+  .pill {
+    display: inline-block; padding: 1px 6px; font-family: var(--font-data); font-size: 9.5px;
+    letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
+  }
+  .pill.r { background: var(--reuse-soft); color: var(--reuse); }
+  .pill.p { background: var(--procure-soft); color: var(--procure); }
+
+  .grand { margin-top: 30px; border: 2px solid var(--fg); background: var(--surface); }
+  .grand h3 {
+    font-family: var(--font-display); font-size: 19px; margin: 0;
+    padding: 11px 14px; background: var(--fg); color: var(--bg);
+  }
+  .grand .tscroll { border: 0; }
+  .grand table { min-width: 560px; }
+
+  .guide { margin-top: 32px; padding-top: 18px; border-top: 2px solid var(--fg); }
+  .guide h3 { font-family: var(--font-display); font-size: 21px; margin: 0 0 4px; }
+  .guide h4 {
+    font-family: var(--font-data); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--fg-dim); margin: 18px 0 7px;
+  }
+  .guide table { min-width: 520px; }
+  .guide td:first-child { white-space: nowrap; }
+  .guide td { line-height: 1.45; }
+  @media (min-width: 760px) {
+    .guide td:first-child { width: 20%; }
+    .guide td:nth-child(2) { width: 38%; }
+  }
+
+  .notes { margin-top: 26px; border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; }
+  .notes h3 { font-family: var(--font-display); font-size: 16px; margin: 0 0 7px; }
+  .notes ul { margin: 0; padding-left: 17px; color: var(--fg-dim); font-size: 12.5px; }
+  .notes li { margin-bottom: 5px; }
+  .notes li:last-child { margin-bottom: 0; }
+  .notes b { color: var(--fg); font-weight: 600; }
+
+  .status { font-family: var(--font-data); font-size: 11px; padding: 7px 9px; margin-top: 7px; text-align: center; }
+  .status.match { background: var(--reuse-soft); color: var(--reuse); }
+  .status.diff { background: var(--accent-soft); color: var(--accent); }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="page">
+    <h1>RM Platform Sizing Calculator</h1>
+    <p>On-premises infrastructure sizing for one bank, derived live from the workload. Change the user
+      population, concurrency or data volumes and every server count, core count and volume below moves
+      with them.</p>
+    <p class="basis" id="basis">10,000 users · 20% concurrency · 100,000 customers · with Kubernetes</p>
+  </header>
+
+  <div class="cols">
+    <div class="rail">
+      <div class="panel">
+        <h2>Workload</h2>
+        <div class="field" title="Provisioned users — How many people have an account, whether or not they are using it right now — the size of the licence list.
+
+What it changes: On its own, very little. What matters is how many are signed in at the same time, which is the next control.">
+          <label for="users"><span class="nm">Provisioned users</span><span class="vl" id="users-v">10,000</span></label>
+          <input type="range" id="users" min="1000" max="40000" step="500" value="10000" title="Provisioned users — How many people have an account, whether or not they are using it right now — the size of the licence list.
+
+What it changes: On its own, very little. What matters is how many are signed in at the same time, which is the next control.">
+        </div>
+        <div class="field" title="Peak concurrency — Of those people, the share actually using the system at the busiest moment of the day.
+
+What it changes: The most important input on this page. 10,000 users at 30% is 3,000 people at once, and nearly every figure here follows from that 3,000 rather than from the 10,000.">
+          <label for="conc"><span class="nm">Peak concurrency</span><span class="vl" id="conc-v">20%</span></label>
+          <input type="range" id="conc" min="5" max="80" step="1" value="30" title="Peak concurrency — Of those people, the share actually using the system at the busiest moment of the day.
+
+What it changes: The most important input on this page. 10,000 users at 30% is 3,000 people at once, and nearly every figure here follows from that 3,000 rather than from the 10,000.">
+          <p class="hint" id="conc-hint">2,000 users active at peak</p>
+        </div>
+        <div class="field" title="Customers (client entities) — How many companies the bank banks.
+
+What it changes: How much data there is: database size, cache memory, document storage. It barely touches the application servers, because a screen costs the same to draw whether the bank has 50,000 customers or 500,000.">
+          <label for="cust"><span class="nm">Customers (client entities)</span><span class="vl" id="cust-v">100,000</span></label>
+          <input type="range" id="cust" min="10000" max="500000" step="10000" value="100000" title="Customers (client entities) — How many companies the bank banks.
+
+What it changes: How much data there is: database size, cache memory, document storage. It barely touches the application servers, because a screen costs the same to draw whether the bank has 50,000 customers or 500,000.">
+        </div>
+        <div class="field" title="Requests per active user per minute — How busy one person is — screens opened, drill-downs, things saved. Twelve is someone working steadily, not hammering the keyboard.
+
+What it changes: Multiplied by the concurrent users, this is the request rate the whole system has to carry.">
+          <label for="rpm"><span class="nm">Requests / active user / min</span><span class="vl" id="rpm-v">12</span></label>
+          <input type="range" id="rpm" min="4" max="30" step="1" value="12" title="Requests per active user per minute — How busy one person is — screens opened, drill-downs, things saved. Twelve is someone working steadily, not hammering the keyboard.
+
+What it changes: Multiplied by the concurrent users, this is the request rate the whole system has to carry.">
+        </div>
+        <div class="field" title="Read share of traffic — How much of the work is looking things up, against changing them.
+
+What it changes: Where the load lands. Reads are served by the warehouse and the cache; writes go to the operational database. Raising this shifts work from one to the other rather than adding it.">
+          <label for="readpct"><span class="nm">Read share of traffic</span><span class="vl" id="readpct-v">85 / 15</span></label>
+          <input type="range" id="readpct" min="50" max="95" step="1" value="85" title="Read share of traffic — How much of the work is looking things up, against changing them.
+
+What it changes: Where the load lands. Reads are served by the warehouse and the cache; writes go to the operational database. Raising this shifts work from one to the other rather than adding it.">
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Performance targets</h2>
+        <div class="field" title="API p95 — How long a screen is allowed to take. “p95” means 95 out of every 100 requests finish inside this time; the slowest 1 in 20 may take longer.
+
+What it changes: How hard each server may be driven before it needs a neighbour. A looser limit means fewer servers — but the gain runs out around 2 seconds, because a server's capacity is set by its CPU, not by how long you are willing to wait.">
+          <label for="api"><span class="nm">API p95</span><span class="vl" id="api-v">2 s</span></label>
+          <input type="range" id="api" min="250" max="3000" step="250" value="2000" title="API p95 — How long a screen is allowed to take. “p95” means 95 out of every 100 requests finish inside this time; the slowest 1 in 20 may take longer.
+
+What it changes: How hard each server may be driven before it needs a neighbour. A looser limit means fewer servers — but the gain runs out around 2 seconds, because a server's capacity is set by its CPU, not by how long you are willing to wait.">
+          <p class="hint" id="api-hint">Autoscaler holds 85% CPU · 65–105 req/s per pod. Nothing further to save past 2 s · +28 cores at 250 ms</p>
+        </div>
+        <div class="field" title="Drill page — How long opening a drill-down into underlying transactions may take.
+
+What it changes: The data warehouse, and nothing else. That is where the large scans happen, and a longer allowance means each scan needs less parallel horsepower.">
+          <label for="drill"><span class="nm">Drill page</span><span class="vl" id="drill-v">5 s</span></label>
+          <input type="range" id="drill" min="1" max="10" step="1" value="5" title="Drill page — How long opening a drill-down into underlying transactions may take.
+
+What it changes: The data warehouse, and nothing else. That is where the large scans happen, and a longer allowance means each scan needs less parallel horsepower.">
+          <p class="hint" id="drill-hint">8 cores saved at 10 s · +32 cores at 1 s</p>
+        </div>
+        <div class="field" title="Message processing — How long a background event — a booking, a feed update — may sit before it is handled.
+
+What it changes: The message broker alone. A longer allowance tolerates a deeper backlog, so fewer broker nodes are needed to drain it in time.">
+          <label for="msg"><span class="nm">Message processing</span><span class="vl" id="msg-v">10 s</span></label>
+          <input type="range" id="msg" min="2" max="20" step="1" value="10" title="Message processing — How long a background event — a booking, a feed update — may sit before it is handled.
+
+What it changes: The message broker alone. A longer allowance tolerates a deeper backlog, so fewer broker nodes are needed to drain it in time.">
+          <p class="hint" id="msg-hint">Nothing further to save past 10 s · +8 cores at 2 s</p>
+        </div>
+        <div class="field" title="Cache hit rate — How often a repeated read can be answered from memory instead of going to the database.
+
+What it changes: The sharpest of the four targets. At 80%, only 1 read in 5 reaches the warehouse. At 60% that doubles and puts the cores straight back onto it — which is why this is a target to engineer for, not to hope for.">
+          <label for="hit"><span class="nm">Cache hit rate</span><span class="vl" id="hit-v">&gt; 80%</span></label>
+          <input type="range" id="hit" min="50" max="95" step="5" value="80" title="Cache hit rate — How often a repeated read can be answered from memory instead of going to the database.
+
+What it changes: The sharpest of the four targets. At 80%, only 1 read in 5 reaches the warehouse. At 60% that doubles and puts the cores straight back onto it — which is why this is a target to engineer for, not to hope for.">
+          <p class="hint" id="hit-hint">68 req/s reach the warehouse. 12 cores saved at &gt; 95% · +24 cores at &gt; 50%</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Data volumes</h2>
+        <div class="field" title="Postings per day — How many transaction lines land each day.
+
+What it changes: The size of the warehouse, together with the retention setting below.">
+          <label for="post"><span class="nm">Postings per day</span><span class="vl" id="post-v">2M</span></label>
+          <input type="range" id="post" min="500000" max="20000000" step="250000" value="3500000" title="Postings per day — How many transaction lines land each day.
+
+What it changes: The size of the warehouse, together with the retention setting below.">
+        </div>
+        <div class="field" title="History retained — How far back the warehouse keeps transaction-level detail.
+
+What it changes: Warehouse storage, almost directly — halve the months and you roughly halve the terabytes. Cores move far less, because a scan is bounded by the slice it reads, not by everything kept.">
+          <label for="hist"><span class="nm">History retained</span><span class="vl" id="hist-v">24 months</span></label>
+          <input type="range" id="hist" min="6" max="84" step="6" value="24" title="History retained — How far back the warehouse keeps transaction-level detail.
+
+What it changes: Warehouse storage, almost directly — halve the months and you roughly halve the terabytes. Cores move far less, because a scan is bounded by the slice it reads, not by everything kept.">
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Availability</h2>
+        <div class="seg" id="ha-seg" role="group" aria-label="Availability" title="Availability — Whether this is a production deployment that survives a server failure, or a pilot that does not.
+
+What it changes: More than anything else on this page. Highly available means paired databases, quorum counts of three for the broker, cache and control plane, and a three-host application floor. Pilot means a single node of each. It is not half the size: dropping the readable standby puts the read path on the warehouse primary, which then needs about 30% more cores. What a pilot gives up is failover, the drill budget and the 99.5% target — so it is a way to try the product, not to run it.">
+          <button type="button" data-ha="1" aria-pressed="true">Highly available</button>
+          <button type="button" data-ha="0" aria-pressed="false">Pilot</button>
+        </div>
+        <p class="hint" id="ha-hint">Paired databases, quorum tiers, three application hosts minimum.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Database engine</h2>
+        <div class="seg" id="engine-seg" role="group" aria-label="Database engine" title="Database engine — Which database the bank will run. It changes the engine named in every database row, the operating systems those servers support, and the software to install on them.
+
+What it changes: The warehouse, through one thing: whether the engine has a columnar store. SQL Server Enterprise includes one. Oracle needs the separately licensed In-Memory option and PostgreSQL needs the Citus extension, so without those the same drill scans need about 1.5x the cores and the postings fact compresses about 1.8x less. Those two multipliers are planning estimates and want a benchmark. Oracle is not supported by the product today — see architecture/oracle-support-gap.md.">
+          <button type="button" data-engine="sqlserver" aria-pressed="false">SQL Server</button>
+          <button type="button" data-engine="oracle" aria-pressed="true">Oracle</button>
+          <button type="button" data-engine="postgresql" aria-pressed="false">Postgres</button>
+        </div>
+        <p class="hint" id="engine-hint">NOT SUPPORTED TODAY — delivery scope item. No columnar store, so the warehouse carries 1.5x the cores and 1.8x the storage — both estimates, not benchmarks.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Database instance choice</h2>
+        <div class="seg" id="licopt-seg" role="group" aria-label="Database instance choice">
+          <button type="button" data-licopt="" aria-pressed="true">Sized</button>
+          <button type="button" data-licopt="hold" aria-pressed="false">Hold 90%</button>
+          <button type="button" data-licopt="min" aria-pressed="false">Cheapest</button>
+        </div>
+        <p class="hint" id="licopt-hint">Database instances sized to meet the core count.</p>
+      </div>
+
+
+      <div class="panel">
+        <h2>Pod and node sizing</h2>
+        <div class="field" title="CPU request per pod — How much processor each copy of a service reserves for itself. Everything in the application tier is counted up from this one number.
+
+What it changes: The softest number on this page and the one with the most leverage. It has never been measured against a running service — it is a sensible starting guess. Dropping it from 500m to 300m takes the production pool from 5 hosts to 3. A load test is what settles it.">
+          <label for="podcpu"><span class="nm">CPU request per pod</span><span class="vl" id="podcpu-v">300m</span></label>
+          <input type="range" id="podcpu" min="200" max="800" step="20" value="500" title="CPU request per pod — How much processor each copy of a service reserves for itself. Everything in the application tier is counted up from this one number.
+
+What it changes: The softest number on this page and the one with the most leverage. It has never been measured against a running service — it is a sensible starting guess. Dropping it from 500m to 300m takes the production pool from 5 hosts to 3. A load test is what settles it.">
+          <p class="hint" id="podcpu-hint">Never profiled — the softest number here. Peak 23 cores, burst ceiling 36 cores</p>
+        </div>
+        <div class="field" title="Memory request per pod — How much memory each copy of a service reserves. The edge gateway is the exception at 512 MiB, because it holds no database connections.
+
+What it changes: The memory side of the host pool. It rarely decides the host count, because these services run out of processor before they run out of memory — but set it too low and the JVM is killed under load.">
+          <label for="podmem"><span class="nm">Memory request per pod</span><span class="vl" id="podmem-v">1 GiB</span></label>
+          <input type="range" id="podmem" min="384" max="2048" step="128" value="1024" title="Memory request per pod — How much memory each copy of a service reserves. The edge gateway is the exception at 512 MiB, because it holds no database connections.
+
+What it changes: The memory side of the host pool. It rarely decides the host count, because these services run out of processor before they run out of memory — but set it too low and the JVM is killed under load.">
+        </div>
+        <div class="field" title="Cores per application host — The size of one server in the application pool. Memory follows at four times the cores.
+
+What it changes: Server count and total cores, in opposite directions. Many small hosts waste cores on per-host overhead; few large ones waste them on the three-host minimum and lose more capacity when one fails. Around 12 to 24 cores is usually the sweet spot.">
+          <label for="nodecpu"><span class="nm">Cores per application host</span><span class="vl" id="nodecpu-v">16 cores</span></label>
+          <input type="range" id="nodecpu" min="8" max="48" step="4" value="16" title="Cores per application host — The size of one server in the application pool. Memory follows at four times the cores.
+
+What it changes: Server count and total cores, in opposite directions. Many small hosts waste cores on per-host overhead; few large ones waste them on the three-host minimum and lose more capacity when one fails. Around 12 to 24 cores is usually the sweet spot.">
+          <p class="hint" id="nodecpu-hint">3 hosts × 16 = 48 cores in production. Holds expected peak with one host down, not the burst ceiling</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Deployment</h2>
+        <div class="seg" id="opt-seg" role="group" aria-label="Deployment option" title="With / without Kubernetes — Whether the services run on Kubernetes, which starts and stops copies by itself as load moves, or as ordinary programs on a fixed set of servers.
+
+What it changes: Without it you must buy for the busiest moment of the day and leave it running all day, so the application tier grows by about a quarter. Total cores come out much the same; what you lose is automatic scaling, self-healing and rolling release.">
+          <button type="button" id="opt-k8s" aria-pressed="true">With Kubernetes</button>
+          <button type="button" id="opt-vm" aria-pressed="false">Without</button>
+        </div>
+        <p class="hint" id="opt-hint">Ships today: Helm chart and container images, linted and rendered in CI.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Environments</h2>
+        <div class="checks" id="env-checks" title="Environments — Which of the three sets of hardware to count: the test environment, the live site, and the standby site.
+
+What it changes: Everything, proportionally. Each is a complete environment in its own right.">
+          <label class=""><input type="checkbox" id="env-uat" checked=""><span class="tx">UAT</span></label>
+          <label class="on"><input type="checkbox" id="env-dc" checked=""><span class="tx">Production — DC</span></label>
+          <label class=""><input type="checkbox" id="env-dr" checked=""><span class="tx">Production — DR</span></label>
+        </div>
+        <div style="margin-top:12px" class="checks">
+          <label title="Size UAT for load testing — Makes the test environment large enough that a load test run there tells you something about the live site.
+
+What it changes: Adds application hosts and warehouse storage to UAT. Without it, UAT proves the software works, not that it performs."><input type="checkbox" id="uatperf" title="Size UAT for load testing — Makes the test environment large enough that a load test run there tells you something about the live site.
+
+What it changes: Adds application hosts and warehouse storage to UAT. Without it, UAT proves the software works, not that it performs."><span class="tx">Size UAT for load testing</span></label>
+          <label title="On-premises model serving — Whether the AI features run on the bank's own GPUs instead of calling an approved outside service.
+
+What it changes: Adds two GPU servers per site. Choose it when the bank will not allow any traffic to leave the data centre."><input type="checkbox" id="gpu" title="On-premises model serving — Whether the AI features run on the bank's own GPUs instead of calling an approved outside service.
+
+What it changes: Adds two GPU servers per site. Choose it when the bank will not allow any traffic to leave the data centre."><span class="tx">On-premises model serving (GPU)</span></label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Bank already operates</h2>
+        <div class="checks" id="reuse-box" title="Bank already operates — Tick each capability the bank already runs — load balancers, object storage, monitoring, backup, and so on.
+
+What it changes: The biggest single lever on server count, and it costs nothing. Ticked lines drop out of the total, because the product connects to what the bank has instead of asking for another one."><label class=""><input type="checkbox" data-reuse="platform"><span class="tx">Kubernetes platform</span></label><label class=""><input type="checkbox" data-reuse="lb"><span class="tx">Load balancers</span></label><label class=""><input type="checkbox" data-reuse="broker"><span class="tx">Message broker (RabbitMQ)</span></label><label class=""><input type="checkbox" data-reuse="cache"><span class="tx">Cache (Redis)</span></label><label class=""><input type="checkbox" data-reuse="objstore"><span class="tx">S3-compatible object store</span></label><label class=""><input type="checkbox" data-reuse="observ"><span class="tx">Observability platform</span></label><label class="on"><input type="checkbox" data-reuse="repo"><span class="tx">Registry / artifact repository</span></label><label class="on"><input type="checkbox" data-reuse="bastion"><span class="tx">Bastion / config management</span></label><label class="on"><input type="checkbox" data-reuse="backup"><span class="tx">Enterprise backup estate</span></label></div>
+        <p class="hint">Ticked capability is reused from the bank's existing estate and drops out of the
+          procurement total.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Export</h2>
+        <button type="button" class="btn" id="copy-csv">Copy all tables as CSV</button>
+        <button type="button" class="btn" id="export-xlsx">Download AWS India cost (Excel)</button>
+        <div class="field" style="margin:13px 0 0" title="USD → INR — The rate the Excel workbook converts dollar figures at.
+
+What it changes: Every rupee column in the download, and the rupee figures in the cost table below. It is written into the workbook as a single editable cell, so the rate can also be changed after the file is opened.">
+          <label for="fx"><span class="nm">USD → INR</span><span class="vl" id="fx-v">93.92</span></label>
+          <input type="number" id="fx" min="1" max="500" step="0.01" value="93.92">
+          <p class="hint">AWS ap-south-1 (Mumbai) and database licence list prices, 9 Nov 2026.</p>
+        </div>
+        <button type="button" class="btn" id="reset" style="margin-top:13px">Reset to this file's opening values</button>
+        <p class="status diff" id="status">27 servers · 224 cores</p>
+      </div>
+    </div>
+
+    <main id="out"><section class="derived"><h2>Derived workload</h2><dl class="dgrid"><div><dt>Peak concurrent users</dt><dd>2,000</dd></div><div><dt>Peak request rate</dt><dd>400 <small>req/s</small></dd></div><div><dt>Read / write split</dt><dd>340 / 60 <small>req/s</small></dd></div><div><dt>Service instances at peak</dt><dd>69 <small>of 112 ceiling</small></dd></div><div><dt>Compute at peak</dt><dd>23 <small>cores, 68 GiB</small></dd></div><div><dt>Posting rows held</dt><dd>1.5 <small>billion</small></dd></div><div><dt>Peak DB connections</dt><dd>~900</dd></div><div><dt>CPU target per pod</dt><dd>85% <small>at p95 2 s</small></dd></div></dl></section><h3 class="env">Production — Primary Data Centre</h3><p class="envnote">The live service, sized to hold the burst ceiling with one application host unavailable.</p><div class="tscroll"><table><thead><tr><th>Server type</th><th class="n">Qty</th><th class="n">Cores</th><th class="n">RAM</th><th>Hard drive / volumes</th><th>OS supported</th><th>Database supported</th><th>Software required</th></tr></thead><tbody><tr><td class="srv"><span class="cat">Orchestration</span>Kubernetes control plane</td><td class="n">3</td><td class="n">8</td><td class="n">32 GiB</td><td>200 GB OS + 100 GB etcd (NVMe)</td><td>RHEL 9.x · Oracle Linux 9.x · SLES 15 · Ubuntu 22.04/24.04 LTS</td><td>Kubernetes 1.29+ (RKE2, OpenShift 4.14+ or kubeadm), etcd 3.5+, containerd 1.7+</td><td></td></tr><tr><td class="srv"><span class="cat">Application</span>Kubernetes worker node <span class="pill p">dedicated</span></td><td class="n">3</td><td class="n">16</td><td class="n">64 GiB</td><td>200 GB OS + 300 GB images &amp; ephemeral</td><td>RHEL 9.x · Oracle Linux 9.x · SLES 15 · Ubuntu 22.04/24.04 LTS</td><td>kubelet 1.29+, containerd 1.7+, CNI (Calico/Cilium), CSI driver, OpenTelemetry node agent</td><td></td></tr><tr><td class="srv"><span class="cat">Orchestration</span>Kubernetes infrastructure node</td><td class="n">2</td><td class="n">8</td><td class="n">32 GiB</td><td>200 GB OS + 200 GB (SSD)</td><td>RHEL 9.x · Oracle Linux 9.x · SLES 15 · Ubuntu 22.04/24.04 LTS</td><td>kubelet, containerd, CNI and CSI as above, plus ingress controller and certificate tooling</td><td></td></tr><tr><td class="srv"><span class="cat">Routing</span>Load balancer / reverse proxy</td><td class="n">2</td><td class="n">4</td><td class="n">8 GiB</td><td>100 GB OS (SSD)</td><td>RHEL 9.x · Ubuntu 22.04 LTS · or the bank's appliance</td><td>HAProxy 2.8+ or NGINX 1.24+, active/passive with a virtual IP, TLS 1.2/1.3 termination</td><td></td></tr><tr><td class="srv"><span class="cat">Database</span>Operational — primary <span class="pill p">dedicated</span></td><td class="n">1</td><td class="n">10</td><td class="n">128 GiB</td><td>200 GB OS + 1.5 TB data + 0.5 TB log + 0.5 TB tempdb (separate volumes)</td><td>Oracle Linux 8/9 · RHEL 8/9 · Windows Server 2022</td><td>Oracle Database 19c or 23ai, Enterprise Edition + Partitioning</td><td>Database engine, Partitioning option, Data Guard, RMAN, Flyway 10+. Oracle JDBC driver in the services</td></tr><tr><td class="srv"><span class="cat">Database</span>Operational — synchronous secondary <span class="pill p">dedicated</span></td><td class="n">1</td><td class="n">10</td><td class="n">128 GiB</td><td>Identical to the primary</td><td>Oracle Linux 8/9 · RHEL 8/9 · Windows Server 2022</td><td>Oracle Database 19c or 23ai, Enterprise Edition + Partitioning</td><td>Database engine, Partitioning option, Data Guard, RMAN, Flyway 10+. Oracle JDBC driver in the services, as a synchronous Data Guard standby and the backup source</td></tr><tr><td class="srv"><span class="cat">Database</span>Data warehouse — primary <span class="pill p">dedicated</span></td><td class="n">1</td><td class="n">22</td><td class="n">256 GiB</td><td>200 GB OS + 7 TB data + 1 TB log + 1 TB tempdb (separate volumes)</td><td>Oracle Linux 8/9 · RHEL 8/9 · Windows Server 2022</td><td>Oracle Database 19c or 23ai, Enterprise Edition + Partitioning — Partitioning is required and separately licensed; a columnar store needs Database In-Memory, also separately licensed; a readable standby needs Active Data Guard</td><td>Database engine, Partitioning option, Data Guard, RMAN, Flyway 10+. Oracle JDBC driver in the services</td></tr><tr><td class="srv"><span class="cat">Database</span>Data warehouse — readable secondary <span class="pill p">dedicated</span></td><td class="n">1</td><td class="n">22</td><td class="n">256 GiB</td><td>Identical to the primary</td><td>Oracle Linux 8/9 · RHEL 8/9 · Windows Server 2022</td><td>Oracle Database 19c or 23ai, Enterprise Edition + Partitioning</td><td>Database engine, Partitioning option, Data Guard, RMAN, Flyway 10+. Oracle JDBC driver in the services, as a Active Data Guard readable standby</td></tr><tr><td class="srv"><span class="cat">Messaging</span>RabbitMQ broker</td><td class="n">3</td><td class="n">4</td><td class="n">16 GiB</td><td>100 GB OS + 200 GB message store (SSD)</td><td>RHEL 9.x · Ubuntu 22.04 LTS</td><td>RabbitMQ 3.13+ with quorum queues, Erlang/OTP 26, management and Prometheus plug-ins</td><td></td></tr><tr><td class="srv"><span class="cat">Cache</span>Redis</td><td class="n">3</td><td class="n">4</td><td class="n">32 GiB</td><td>100 GB OS + 100 GB (SSD, snapshots only)</td><td>RHEL 9.x · Ubuntu 22.04 LTS</td><td>Redis 7.2+ in Sentinel or cluster mode, eviction policy allkeys-lru. Cache only — never a system of record</td><td></td></tr><tr><td class="srv"><span class="cat">Storage</span>S3-compatible object store</td><td class="n">4</td><td class="n">4</td><td class="n">16 GiB</td><td>100 GB OS + 3 TB each</td><td>RHEL 9.x · Ubuntu 22.04 LTS</td><td>MinIO, or the bank's S3-compatible store, with Signature V4, versioning and server-side encryption</td><td></td></tr><tr><td class="srv"><span class="cat">Monitoring</span>Observability stack</td><td class="n">3</td><td class="n">8</td><td class="n">32 GiB</td><td>100 GB OS + 2 TB retention (SSD)</td><td>RHEL 9.x · Ubuntu 22.04 LTS</td><td>Prometheus 2.5x, Grafana 11+, OpenTelemetry Collector, Loki or the bank's log platform</td><td></td></tr><tr class="reused"><td class="srv"><span class="cat">Repository</span>Container registry <span class="pill r">reused</span></td><td class="n">2</td><td class="n">4</td><td class="n">16 GiB</td><td>100 GB OS + 2 TB (SSD)</td><td>RHEL 9.x · Ubuntu 22.04 LTS</td><td>Harbor 2.10+, or the bank's registry, with image signing and vulnerability scanning</td><td></td></tr><tr class="reused"><td class="srv"><span class="cat">Management</span>Bastion / deployment host <span class="pill r">reused</span></td><td class="n">1</td><td class="n">4</td><td class="n">16 GiB</td><td>200 GB OS (SSD)</td><td>RHEL 9.x · Ubuntu 22.04 LTS</td><td>kubectl 1.29+, Helm 3.14+, Flyway 10+, the bank's secret-store CLI, OpenSSH</td><td></td></tr><tr class="reused"><td class="srv"><span class="cat">Backup</span>Backup target <span class="pill r">reused</span></td><td class="n">1</td><td class="n">8</td><td class="n">32 GiB</td><td>100 GB OS + 22 TB (nearline acceptable)</td><td>RHEL 9.x · Windows Server 2022 · or the bank's appliance</td><td>The bank's enterprise backup product (Veeam, Commvault, NetBackup) with database and object-store agents</td><td></td></tr></tbody><tfoot><tr><td>Total to procure</td><td class="n">27</td><td class="n">224</td><td class="n">1,440 GiB</td><td colspan="4">47 TB usable &nbsp;·&nbsp; dedicated capacity alone: 7 servers, 112 cores</td></tr></tfoot></table></div><section class="grand"><h3>All selected environments</h3><div class="tscroll"><table><thead><tr><th>Scope</th><th class="n">Servers</th><th class="n">Cores</th><th class="n">RAM</th><th class="n">Storage</th></tr></thead><tbody><tr><td>Procuring everything</td><td class="n">27</td><td class="n">224</td><td class="n">1,440 GiB</td><td class="n">47 TB</td></tr><tr><td>Dedicated capacity only</td><td class="n">7</td><td class="n">112</td><td class="n">960 GiB</td><td class="n">25 TB</td></tr></tbody></table></div></section><section class="notes"><h3>How these figures are derived</h3><ul><li><b>The latency budget sets how hard a pod may be driven.</b> A looser p95 permits more queueing, so the autoscaler holds a higher CPU target and each pod serves more requests — but a pod's capacity is fixed by CPU, so the gain saturates. Four times the budget is nowhere near four times the throughput.</li><li><b>Application hosts</b> hold the burst ceiling, or expected peak with one host down, whichever is larger. 16 cores to 64 GiB matches the services' own 500 millicore to 1 GiB request ratio, so neither dimension strands first.</li><li><b>Quantities of three or four</b> are quorum and erasure-coding minimums, not load: etcd, RabbitMQ and Redis Sentinel need a majority; erasure coding needs four nodes to survive one loss.</li><li><b>Warehouse cores</b> scale with the square root of read rate times row count, because columnstore scans parallelise across cores. <b>Operational database cores</b> scale with write rate, where connection handling and log flush dominate.</li><li><b>Every figure is a planning assumption.</b> Confirm the bank's real concurrency profile and volumes in sprint 0, then validate against the service levels with a load test.</li></ul></section><section class="guide"><h3>What each input does</h3><h4>Workload</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>Provisioned users</b></td><td>How many people have an account, whether or not they are using it right now — the size of the licence list.</td><td>On its own, very little. What matters is how many are signed in at the same time, which is the next control.</td></tr><tr><td><b>Peak concurrency</b></td><td>Of those people, the share actually using the system at the busiest moment of the day.</td><td><b>The most important input on this page.</b> 10,000 users at 30% is 3,000 people at once, and nearly every figure here follows from that 3,000 rather than from the 10,000.</td></tr><tr><td><b>Customers (client entities)</b></td><td>How many companies the bank banks.</td><td>How much data there is: database size, cache memory, document storage. It barely touches the application servers, because a screen costs the same to draw whether the bank has 50,000 customers or 500,000.</td></tr><tr><td><b>Requests per active user per minute</b></td><td>How busy one person is — screens opened, drill-downs, things saved. Twelve is someone working steadily, not hammering the keyboard.</td><td>Multiplied by the concurrent users, this is the request rate the whole system has to carry.</td></tr><tr><td><b>Read share of traffic</b></td><td>How much of the work is looking things up, against changing them.</td><td>Where the load lands. Reads are served by the warehouse and the cache; writes go to the operational database. Raising this shifts work from one to the other rather than adding it.</td></tr></tbody></table></div><h4>Performance targets</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>API p95</b></td><td>How long a screen is allowed to take. “p95” means 95 out of every 100 requests finish inside this time; the slowest 1 in 20 may take longer.</td><td>How hard each server may be driven before it needs a neighbour. A looser limit means fewer servers — but the gain runs out around 2 seconds, because a server's capacity is set by its CPU, not by how long you are willing to wait.</td></tr><tr><td><b>Drill page</b></td><td>How long opening a drill-down into underlying transactions may take.</td><td>The data warehouse, and nothing else. That is where the large scans happen, and a longer allowance means each scan needs less parallel horsepower.</td></tr><tr><td><b>Message processing</b></td><td>How long a background event — a booking, a feed update — may sit before it is handled.</td><td>The message broker alone. A longer allowance tolerates a deeper backlog, so fewer broker nodes are needed to drain it in time.</td></tr><tr><td><b>Cache hit rate</b></td><td>How often a repeated read can be answered from memory instead of going to the database.</td><td><b>The sharpest of the four targets.</b> At 80%, only 1 read in 5 reaches the warehouse. At 60% that doubles and puts the cores straight back onto it — which is why this is a target to engineer for, not to hope for.</td></tr></tbody></table></div><h4>Data volumes</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>Postings per day</b></td><td>How many transaction lines land each day.</td><td>The size of the warehouse, together with the retention setting below.</td></tr><tr><td><b>History retained</b></td><td>How far back the warehouse keeps transaction-level detail.</td><td>Warehouse storage, almost directly — halve the months and you roughly halve the terabytes. Cores move far less, because a scan is bounded by the slice it reads, not by everything kept.</td></tr></tbody></table></div><h4>Availability</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>Availability</b></td><td>Whether this is a production deployment that survives a server failure, or a pilot that does not.</td><td><b>More than anything else on this page.</b> Highly available means paired databases, quorum counts of three for the broker, cache and control plane, and a three-host application floor. Pilot means a single node of each. It is not half the size: dropping the readable standby puts the read path on the warehouse primary, which then needs about 30% more cores. What a pilot gives up is failover, the drill budget and the 99.5% target — so it is a way to try the product, not to run it.</td></tr></tbody></table></div><h4>Database engine</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>Database engine</b></td><td>Which database the bank will run. It changes the engine named in every database row, the operating systems those servers support, and the software to install on them.</td><td><b>The warehouse, through one thing: whether the engine has a columnar store.</b> SQL Server Enterprise includes one. Oracle needs the separately licensed In-Memory option and PostgreSQL needs the Citus extension, so without those the same drill scans need about 1.5x the cores and the postings fact compresses about 1.8x less. Those two multipliers are planning estimates and want a benchmark. <b>Oracle is not supported by the product today</b> — see architecture/oracle-support-gap.md.</td></tr></tbody></table></div><h4>Pod and node sizing</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>CPU request per pod</b></td><td>How much processor each copy of a service reserves for itself. Everything in the application tier is counted up from this one number.</td><td><b>The softest number on this page and the one with the most leverage.</b> It has never been measured against a running service — it is a sensible starting guess. Dropping it from 500m to 300m takes the production pool from 5 hosts to 3. A load test is what settles it.</td></tr><tr><td><b>Memory request per pod</b></td><td>How much memory each copy of a service reserves. The edge gateway is the exception at 512 MiB, because it holds no database connections.</td><td>The memory side of the host pool. It rarely decides the host count, because these services run out of processor before they run out of memory — but set it too low and the JVM is killed under load.</td></tr><tr><td><b>Cores per application host</b></td><td>The size of one server in the application pool. Memory follows at four times the cores.</td><td>Server count and total cores, in opposite directions. Many small hosts waste cores on per-host overhead; few large ones waste them on the three-host minimum and lose more capacity when one fails. Around 12 to 24 cores is usually the sweet spot.</td></tr></tbody></table></div><h4>Deployment and scope</h4><div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody><tr><td><b>With / without Kubernetes</b></td><td>Whether the services run on Kubernetes, which starts and stops copies by itself as load moves, or as ordinary programs on a fixed set of servers.</td><td>Without it you must buy for the busiest moment of the day and leave it running all day, so the application tier grows by about a quarter. Total cores come out much the same; what you lose is automatic scaling, self-healing and rolling release.</td></tr><tr><td><b>Environments</b></td><td>Which of the three sets of hardware to count: the test environment, the live site, and the standby site.</td><td>Everything, proportionally. Each is a complete environment in its own right.</td></tr><tr><td><b>Size UAT for load testing</b></td><td>Makes the test environment large enough that a load test run there tells you something about the live site.</td><td>Adds application hosts and warehouse storage to UAT. Without it, UAT proves the software works, not that it performs.</td></tr><tr><td><b>On-premises model serving</b></td><td>Whether the AI features run on the bank's own GPUs instead of calling an approved outside service.</td><td>Adds two GPU servers per site. Choose it when the bank will not allow any traffic to leave the data centre.</td></tr><tr><td><b>Bank already operates</b></td><td>Tick each capability the bank already runs — load balancers, object storage, monitoring, backup, and so on.</td><td><b>The biggest single lever on server count, and it costs nothing.</b> Ticked lines drop out of the total, because the product connects to what the bank has instead of asking for another one.</td></tr></tbody></table></div></section></main>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Reusable platform capability (Category B in the sizing document) -------------------
+  var REUSABLE = [
+    { k: "platform",  label: "Kubernetes platform",   only: "k8s" },
+    { k: "router",    label: "Internal service routing", only: "vm" },
+    { k: "lb",        label: "Load balancers" },
+    { k: "broker",    label: "Message broker (RabbitMQ)" },
+    { k: "cache",     label: "Cache (Redis)" },
+    { k: "objstore",  label: "S3-compatible object store" },
+    { k: "observ",    label: "Observability platform" },
+    { k: "repo",      label: "Registry / artifact repository" },
+    { k: "bastion",   label: "Bastion / config management" },
+    { k: "backup",    label: "Enterprise backup estate" }
+  ];
+
+  // Database engines. The warehouse factors are the consequence of a columnar store being
+  // present or not: SQL Server has columnstore in Enterprise, Oracle only with the separately
+  // licensed In-Memory option, PostgreSQL only through Citus. Without one, the same drill
+  // scans need more CPU and the postings fact compresses far less.
+  // BOTH FACTORS ARE PLANNING ESTIMATES AND NEED A BENCHMARK. See architecture/oracle-support-gap.md.
+  var ENGINES = {
+    sqlserver: {
+      name: "SQL Server", columnar: true, whCpu: 1.0, whStore: 1.0,
+      db: "SQL Server 2022 Enterprise",
+      dbNote: "columnstore, table partitioning and readable secondaries all required, and all included in Enterprise",
+      os: "Windows Server 2022 Std/DC · RHEL 9.x · Ubuntu 22.04 LTS",
+      soft: "Database engine, Always On Availability Groups, SQL Server Agent, Flyway 10+, enterprise backup agent",
+      ha: "synchronous Always On replica", read: "readable Always On replica", async: "asynchronous Always On replica",
+      support: "Supported and CI-tested"
+    },
+    oracle: {
+      name: "Oracle", columnar: false, whCpu: 1.5, whStore: 1.8,
+      db: "Oracle Database 19c or 23ai, Enterprise Edition + Partitioning",
+      dbNote: "Partitioning is required and separately licensed; a columnar store needs Database In-Memory, also separately licensed; a readable standby needs Active Data Guard",
+      os: "Oracle Linux 8/9 · RHEL 8/9 · Windows Server 2022",
+      soft: "Database engine, Partitioning option, Data Guard, RMAN, Flyway 10+. Oracle JDBC driver in the services",
+      ha: "synchronous Data Guard standby", read: "Active Data Guard readable standby", async: "asynchronous Data Guard standby",
+      support: "NOT SUPPORTED TODAY — delivery scope item"
+    },
+    postgresql: {
+      name: "PostgreSQL", columnar: false, whCpu: 1.5, whStore: 1.8,
+      db: "PostgreSQL 16",
+      dbNote: "no columnar store in core; partitioning is included, a columnar store needs the Citus extension",
+      os: "RHEL 9.x · Oracle Linux 9.x · Ubuntu 22.04/24.04 LTS",
+      soft: "Database engine, Patroni or repmgr, pgBackRest, Flyway 10+",
+      ha: "synchronous streaming standby", read: "hot standby", async: "asynchronous streaming standby",
+      support: "Operational databases supported; warehouse is not"
+    }
+  };
+
+  // ======================================================================================
+  // SCENARIO — the values this file opens with, and the only thing that differs between
+  // this file and a variant of it. To make a variant, copy the file and edit this block:
+  // everything below is identical in every copy. `expect` is a drift guard, not a setting;
+  // when the totals stop matching it, the badge says so instead of claiming a match.
+  // ======================================================================================
+  var SCENARIO = {
+    label: "Matches published document v3.2",
+    expect: { k8s: { srv: 77, cores: 694 }, vm: { srv: 72, cores: 694 } },
+    users: 10000, conc: 30, cust: 100000, rpm: 12, readpct: 85,
+    api: 2000, drill: 5, msg: 10, hit: 80,
+    podcpu: 500, podmem: 1024, nodecpu: 16,
+    post: 3500000, hist: 24, opt: "k8s", engine: "oracle", ha: true,
+    envs: { uat: true, dc: true, dr: true },
+    uatperf: false, gpu: false, licopt: "",
+    reuse: [],
+    // Presentation only — it converts the AWS figures and never touches the sizing, so it is
+    // deliberately outside INPUT_KEYS and does not move the drift badge.
+    fx: 93.92
+  };
+  // ======================================================================================
+
+  var INPUT_KEYS = ["users", "conc", "cust", "rpm", "readpct", "api", "drill", "msg", "hit",
+    "podcpu", "podmem", "nodecpu", "post", "hist"];
+
+  var state = { has: {}, envs: {} };
+  function loadScenario() {
+    INPUT_KEYS.forEach(function (k) { state[k] = SCENARIO[k]; });
+    state.opt = SCENARIO.opt;
+    state.engine = SCENARIO.engine || "sqlserver";
+    state.ha = SCENARIO.ha !== false;
+    state.uatperf = !!SCENARIO.uatperf;
+    state.gpu = !!SCENARIO.gpu;
+    state.licopt = SCENARIO.licopt || "";
+    state.fx = SCENARIO.fx || 93.92;
+    ["uat", "dc", "dr"].forEach(function (e) { state.envs[e] = SCENARIO.envs[e] !== false; });
+    REUSABLE.forEach(function (r) { state.has[r.k] = (SCENARIO.reuse || []).indexOf(r.k) !== -1; });
+  }
+  function atScenario() {
+    return INPUT_KEYS.every(function (k) { return state[k] === SCENARIO[k]; }) &&
+      state.opt === SCENARIO.opt && state.engine === (SCENARIO.engine || "sqlserver") &&
+      state.ha === (SCENARIO.ha !== false) &&
+      state.uatperf === !!SCENARIO.uatperf && state.gpu === !!SCENARIO.gpu &&
+      state.licopt === (SCENARIO.licopt || "") &&
+      ["uat", "dc", "dr"].every(function (e) { return state.envs[e] === (SCENARIO.envs[e] !== false); }) &&
+      REUSABLE.every(function (r) { return state.has[r.k] === ((SCENARIO.reuse || []).indexOf(r.k) !== -1); });
+  }
+  loadScenario();
+
+  // ---- Helpers ---------------------------------------------------------------------------
+  var MEM_STEPS = [8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024];
+  function snapMem(v) {
+    return MEM_STEPS.reduce(function (best, s) {
+      return Math.abs(s - v) < Math.abs(best - v) ? s : best;
+    }, MEM_STEPS[0]);
+  }
+  function evenCores(v, min) {
+    return Math.max(min, 2 * Math.round(v / 2));
+  }
+  function r1(v) { return Math.round(v * 10) / 10; }
+  function fmt(n) { return n.toLocaleString("en-US"); }
+  function tb(v) { return v >= 10 ? Math.round(v) + " TB" : r1(v) + " TB"; }
+
+  // ---- The model. Defaults reproduce the published v3.0 figures exactly. -------------------
+  function model(s) {
+    var m = {};
+    m.concurrent = Math.round(s.users * s.conc / 100);
+    m.peakRPS = Math.round(m.concurrent * s.rpm / 60);
+    m.readRPS = Math.round(m.peakRPS * s.readpct / 100);
+    m.writeRPS = m.peakRPS - m.readRPS;
+
+    // Latency budget sets how hard a pod may be driven before p95 breaks. A looser budget
+    // permits more queueing, so the autoscaler can hold a higher CPU target and each pod
+    // serves more requests. The gain saturates: a pod's service capacity is fixed by CPU,
+    // so 4x the budget is nowhere near 4x the throughput.
+    m.utilTarget = Math.min(0.85, Math.max(0.50, 0.65 * Math.pow(s.api / 500, 0.25)));
+    m.instFactor = 0.65 / m.utilTarget;
+    m.podRPS = Math.round(50 / m.instFactor) + "–" + Math.round(80 / m.instFactor);
+    // Drill budget governs how much parallelism each columnstore scan needs.
+    m.whFactor = Math.min(1.5, Math.max(0.6, Math.pow(2 / s.drill, 0.35)));
+    // Cache hit rate decides how much of the read path reaches the warehouse at all.
+    // Sub-linear, because the readable secondary absorbs part of a worse hit rate.
+    m.missFactor = (100 - s.hit) / 20;
+    m.cacheFactor = Math.sqrt(m.missFactor);
+    m.dbReadRPS = Math.round(m.readRPS * (100 - s.hit) / 100);
+
+    // Service instances. Two per service for HA (three for gateway and reference) is a 48 floor;
+    // a pilot runs one per service, so the floor halves to 24 along with everything built on it.
+    m.floorInst = (s.ha !== false) ? 48 : 24;
+    m.peakInst = Math.max(48, Math.round(m.peakRPS * 0.225 * m.instFactor));
+    m.ceilInst = Math.max(48, Math.round(m.peakRPS * 0.36670 * m.instFactor));
+    // The gateway is the one exception to the per-pod request: 1 core and 512 MiB, whatever
+    // the default is set to, because it is reactive and holds no connection pool.
+    var cpuReq = s.podcpu / 1000, memReq = s.podmem / 1024;
+    var cores = function (n) { return n * cpuReq + (1 - cpuReq) * 3; };
+    var mem = function (n) { return n * memReq - (memReq - 0.5) * 3; };
+    m.floorCores = cores(m.floorInst); m.floorMem = mem(m.floorInst);
+    m.peakCores = cores(m.peakInst);  m.peakMem = mem(m.peakInst);
+    m.ceilCores = cores(m.ceilInst);  m.ceilMem = mem(m.ceilInst);
+
+    // High availability. With it off this is a pilot: single database nodes, single supporting
+    // nodes, and no minimum of three application hosts. It does NOT halve the database, because
+    // dropping the readable standby moves the read path onto the warehouse primary, which then
+    // needs more cores rather than fewer. Availability, failover and the drill budget all go.
+    m.ha = s.ha !== false;
+    m.oltpNodes = m.ha ? 2 : 1;
+
+    // Application hosts. Memory tracks cores at 4:1, matching the default pod request ratio.
+    // Each host loses ~2 cores and ~4 GiB to the OS and the kubelet before anything schedules.
+    m.nodeCpu = s.nodecpu; m.nodeMem = s.nodecpu * 4;
+    var SCH_C = m.nodeCpu - 2, SCH_M = m.nodeMem - 4;
+    // N+1 is an availability guarantee, so a pilot does not pay for it either.
+    var NP1 = m.ha ? 1 : 0;
+    m.nodesDC = Math.max(
+      Math.ceil(m.ceilCores / SCH_C),           // hold the burst ceiling
+      Math.ceil(m.peakCores / SCH_C) + NP1,     // or expected peak with one host down
+      Math.ceil(m.ceilMem / SCH_M),
+      Math.ceil(m.peakMem / SCH_M) + NP1, m.ha ? 3 : 1);
+    m.nodesDR = Math.max(
+      Math.ceil(m.peakCores / SCH_C) + NP1,  // expected peak after failover, N+1
+      Math.ceil(m.peakMem / SCH_M) + NP1, m.ha ? 3 : 1);
+    m.nodesUAT = s.uatperf ? Math.max(6, Math.ceil(m.nodesDC * 0.75)) : 3;
+    if (s.opt === "vm") {                    // +25%: no autoscaling, no bin-packing, coarser failure
+      m.nodesDC = Math.ceil(m.nodesDC * 1.25);
+      m.nodesDR = Math.ceil(m.nodesDR * 1.25);
+    }
+
+    // Operational database. A looser write budget relaxes the log-flush constraint.
+    m.oltpCores = evenCores(16 * Math.sqrt(m.writeRPS / 90) * m.instFactor, 8);
+    m.oltpData = Math.max(0.5, r1(1.5 * s.cust / 100000));
+    m.oltpLog = Math.max(0.25, r1(m.oltpData / 3));
+    m.oltpTemp = m.oltpLog;
+    m.oltpRAM = snapMem(85 * m.oltpData);
+    m.oltpVol = r1(0.2 + m.oltpData + m.oltpLog + m.oltpTemp);
+    m.dbConns = Math.round(m.ceilInst * 8 / 50) * 50;
+
+    // Data warehouse.
+    m.rowsBn = s.post * 30.4 * s.hist / 1e9;
+    m.whData = Math.max(1, Math.round((m.rowsBn * 1.9 + s.cust / 100000 * 1.2) * (ENGINES[s.engine] || ENGINES.sqlserver).whStore));
+    m.whLog = Math.max(1, Math.round(m.whData / 6));
+    m.whTemp = m.whLog;
+    m.eng = ENGINES[s.engine] || ENGINES.sqlserver;
+    m.whCores = evenCores(32 * Math.sqrt((m.readRPS / 510) * (m.rowsBn / 2.5536)) * m.whFactor * m.cacheFactor * m.eng.whCpu, 16);
+    m.whRAM = snapMem(43 * m.whData);
+    m.whVol = r1(0.2 + m.whData + m.whLog + m.whTemp);
+    m.whReadable = m.ha ? Math.max(1, Math.ceil(m.readRPS / 600)) : 0;
+    // Without a readable standby the primary serves the read path as well as the daily load.
+    if (!m.ha) { m.whCores = evenCores(m.whCores * 1.3, 16); }
+
+    // Supporting tiers.
+    m.redisGiB = snapMem((m.concurrent * 0.0073 + s.cust * 0.0001) * (s.hit / 80));
+    m.rabbitNodes = m.writeRPS > 120 * (s.msg / 5) ? 5 : 3;
+    m.objUsable = Math.max(2, Math.round(6 * s.cust / 100000));
+    m.objNodes = 4;
+    m.objPerNode = r1(Math.ceil(m.objUsable * 2 / m.objNodes));
+    return m;
+  }
+
+  // ---- Server lists per environment --------------------------------------------------------
+  // row: [category, name, qty, cores, ramGiB, volumeText, volumeTB, reuseKey|null, database]
+  var LIN = "RHEL 9.x · Oracle Linux 9.x · SLES 15 · Ubuntu 22.04/24.04 LTS";
+
+  function rows(env, s, m) {
+    var k8s = s.opt === "k8s", out = [];
+    var appN = env === "dc" ? m.nodesDC : env === "dr" ? m.nodesDR : m.nodesUAT;
+    var cpCores = env === "uat" ? 4 : 8, cpRAM = env === "uat" ? 16 : 32;
+
+    if (k8s) out.push(["Orchestration", "Kubernetes control plane", m.ha ? 3 : 1, cpCores, cpRAM,
+      "200 GB OS + 100 GB etcd (NVMe)", 0.3, "platform", LIN,
+      "Kubernetes 1.29+ (RKE2, OpenShift 4.14+ or kubeadm), etcd 3.5+, containerd 1.7+"]);
+
+    out.push(["Application", k8s ? "Kubernetes worker node" : "JVM application server", appN, m.nodeCpu, m.nodeMem,
+      k8s ? "200 GB OS + 300 GB images & ephemeral" : "200 GB OS + 200 GB binaries & logs", k8s ? 0.5 : 0.4, null, LIN,
+      k8s ? "kubelet 1.29+, containerd 1.7+, CNI (Calico/Cilium), CSI driver, OpenTelemetry node agent"
+          : "Eclipse Temurin JDK 21, systemd, config-management agent, OpenTelemetry Java agent, log shipper"]);
+
+    if (k8s && env !== "uat") out.push(["Orchestration", "Kubernetes infrastructure node", m.ha ? 2 : 1, 8, 32,
+      "200 GB OS + 200 GB (SSD)", 0.4, "platform", LIN,
+      "kubelet, containerd, CNI and CSI as above, plus ingress controller and certificate tooling"]);
+
+    if (!k8s) out.push(["Routing", "Internal service router", env === "uat" || !m.ha ? 1 : 2, 4, 16,
+      "100 GB OS (SSD)", 0.2, "router", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "HAProxy 2.8+ or NGINX 1.24+ with health-checked backend pools, one per service"]);
+
+    out.push(["Routing", "Load balancer / reverse proxy", env === "uat" || !m.ha ? 1 : 2, 4, 8,
+      "100 GB OS (SSD)", 0.1, "lb", "RHEL 9.x · Ubuntu 22.04 LTS · or the bank's appliance",
+      "HAProxy 2.8+ or NGINX 1.24+, active/passive with a virtual IP, TLS 1.2/1.3 termination"]);
+
+    // Database strings follow the chosen engine, so the table never names a product the bank is not using.
+    var E = m.eng, SQL = E.db, DBOS = E.os, dbSoft = E.soft;
+    if (env === "uat") {
+      var uData = s.uatperf ? Math.max(4, Math.round(m.whData * 0.6)) : 2;
+      var uVol = r1(0.2 + uData + 0.5 + 0.5);
+      out.push(["Database", "Primary (operational and warehouse)", 1, 16, 128,
+        "200 GB OS + " + tb(uData) + " data + 500 GB log + 500 GB tempdb", uVol, null, DBOS, SQL, dbSoft]);
+      if (m.ha) out.push(["Database", "Readable secondary", 1, 16, 128,
+        "Identical to the primary", uVol, null, DBOS, SQL, dbSoft + ", as a " + E.read]);
+    } else if (env === "dr") {
+      out.push(["Database", "Operational — asynchronous replica", 1, m.oltpCores, m.oltpRAM,
+        "200 GB OS + " + tb(m.oltpData) + " data + " + tb(m.oltpLog) + " log + " + tb(m.oltpTemp) + " tempdb",
+        m.oltpVol, null, DBOS, SQL, dbSoft + ", as an " + E.async]);
+      out.push(["Database", "Data warehouse — asynchronous replica", 1, m.whCores, m.whRAM,
+        "200 GB OS + " + tb(m.whData) + " data + " + tb(m.whLog) + " log + " + tb(m.whTemp) + " tempdb",
+        m.whVol, null, DBOS, SQL, dbSoft + ", as an " + E.async]);
+    } else {
+      out.push(["Database", "Operational — primary", 1, m.oltpCores, m.oltpRAM,
+        "200 GB OS + " + tb(m.oltpData) + " data + " + tb(m.oltpLog) + " log + " + tb(m.oltpTemp) + " tempdb (separate volumes)",
+        m.oltpVol, null, DBOS, SQL, dbSoft]);
+      if (m.ha) out.push(["Database", "Operational — synchronous secondary", 1, m.oltpCores, m.oltpRAM,
+        "Identical to the primary", m.oltpVol, null, DBOS, SQL, dbSoft + ", as a " + E.ha + " and the backup source"]);
+      out.push(["Database", "Data warehouse — primary", 1, m.whCores, m.whRAM,
+        "200 GB OS + " + tb(m.whData) + " data + " + tb(m.whLog) + " log + " + tb(m.whTemp) + " tempdb (separate volumes)",
+        m.whVol, null, DBOS, SQL + " — " + E.dbNote, dbSoft]);
+      if (m.whReadable) out.push(["Database", "Data warehouse — readable secondary", m.whReadable, m.whCores, m.whRAM,
+        "Identical to the primary", m.whVol, null, DBOS, SQL, dbSoft + ", as a " + E.read]);
+    }
+
+    out.push(["Messaging", "RabbitMQ broker", env === "uat" || !m.ha ? 1 : m.rabbitNodes, 4, 16,
+      "100 GB OS + 200 GB message store (SSD)", 0.3, "broker", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "RabbitMQ 3.13+ with quorum queues, Erlang/OTP 26, management and Prometheus plug-ins"]);
+
+    out.push(["Cache", "Redis", env === "uat" || !m.ha ? 1 : 3, 4, env === "uat" ? 16 : m.redisGiB,
+      "100 GB OS + 100 GB (SSD, snapshots only)", 0.2, "cache", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "Redis 7.2+ in Sentinel or cluster mode, eviction policy allkeys-lru. Cache only — never a system of record"]);
+
+    out.push(["Storage", "S3-compatible object store", env === "uat" || !m.ha ? 1 : m.objNodes, 4, 16,
+      env === "uat" ? "100 GB OS + 1 TB" : "100 GB OS + " + tb(m.objPerNode) + " each",
+      env === "uat" ? 1.1 : r1(0.1 + m.objPerNode), "objstore", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "MinIO, or the bank's S3-compatible store, with Signature V4, versioning and server-side encryption"]);
+
+    out.push(["Monitoring", "Observability stack", !m.ha ? 1 : env === "dc" ? 3 : env === "dr" ? 2 : 1, 8, 32,
+      env === "uat" ? "100 GB OS + 1 TB (SSD)" : "100 GB OS + 2 TB retention (SSD)",
+      env === "uat" ? 1.1 : 2.1, "observ", "RHEL 9.x · Ubuntu 22.04 LTS",
+      "Prometheus 2.5x, Grafana 11+, OpenTelemetry Collector, Loki or the bank's log platform"]);
+
+    if (env !== "uat") out.push(["Repository", k8s ? "Container registry" : "Artifact repository",
+      !m.ha ? 1 : env === "dc" ? (k8s ? 2 : 1) : 1, 4, 16, "100 GB OS + 2 TB (SSD)", 2.1, "repo",
+      "RHEL 9.x · Ubuntu 22.04 LTS",
+      k8s ? "Harbor 2.10+, or the bank's registry, with image signing and vulnerability scanning"
+          : "JFrog Artifactory or Nexus, holding JAR artefacts rather than container images"]);
+
+    out.push(["Management", k8s ? "Bastion / deployment host" : "Configuration management / bastion", 1,
+      k8s ? 4 : 8, env === "uat" && k8s ? 8 : 16,
+      k8s ? "200 GB OS (SSD)" : "200 GB OS + 100 GB (SSD)", k8s ? 0.2 : 0.3, "bastion",
+      "RHEL 9.x · Ubuntu 22.04 LTS",
+      k8s ? "kubectl 1.29+, Helm 3.14+, Flyway 10+, the bank's secret-store CLI, OpenSSH"
+          : "Ansible (or Puppet/Chef) control node, the bank's secret-store CLI, Flyway 10+, OpenSSH"]);
+
+    if (s.gpu && env !== "uat") out.push(["Inference", "GPU inference server", 2, 32, 256,
+      "200 GB OS + 2 TB NVMe model store", 2.2, null, "RHEL 9.x · Ubuntu 22.04 LTS",
+      "NVIDIA driver, CUDA 12.x, container toolkit, inference server (vLLM, TGI or NVIDIA NIM). 2 × L40S 48 GB or H100 80 GB per server"]);
+
+    if (env === "dc") {
+      var dbTB = out.reduce(function (a, r) { return a + (r[0] === "Database" ? r[2] * r[6] : 0); }, 0);
+      out.push(["Backup", "Backup target", 1, 8, 32,
+        "100 GB OS + " + tb(Math.round(0.75 * (dbTB + m.objUsable))) + " (nearline acceptable)",
+        r1(0.1 + Math.round(0.75 * (dbTB + m.objUsable))), "backup",
+        "RHEL 9.x · Windows Server 2022 · or the bank's appliance",
+        "The bank's enterprise backup product (Veeam, Commvault, NetBackup) with database and object-store agents"]);
+    }
+    return out;
+  }
+
+  function totals(rs, s) {
+    var t = { srv: 0, cores: 0, ram: 0, tb: 0 }, d = { srv: 0, cores: 0, ram: 0, tb: 0 };
+    rs.forEach(function (r) {
+      var reused = r[7] && s.has[r[7]];
+      if (!reused) { t.srv += r[2]; t.cores += r[2] * r[3]; t.ram += r[2] * r[4]; t.tb += r[2] * r[6]; }
+      if (!r[7]) { d.srv += r[2]; d.cores += r[2] * r[3]; d.ram += r[2] * r[4]; d.tb += r[2] * r[6]; }
+    });
+    return { proc: t, dedicated: d };
+  }
+
+  // ---- AWS India cost ------------------------------------------------------------------------
+  // A lift-and-shift price for the same servers in ap-south-1 (Asia Pacific, Mumbai): one EC2
+  // instance per server, the row's volumes as EBS. It is a floor, not a quote. Oracle licences,
+  // OS subscriptions, data transfer, load balancing, snapshots and support are all outside it,
+  // and the Oracle licence alone is usually the largest line in a build like this.
+  //
+  // ONE CORE IS PRICED AS ONE vCPU. An AWS vCPU is a single hyperthread, so a strict
+  // core-for-core rebuild needs roughly twice the vCPUs and costs close to twice these figures.
+  // Which of the two is right is a benchmark question, the same one the warehouse factors are.
+  //
+  // Rates are ap-south-1 Linux on-demand and 3-year Standard Reserved (NO UPFRONT, effective
+  // hourly), taken from the AWS price list published 7 November 2026 and retrieved on the 9th.
+  // Every rate here was checked against AWS's own published list, not an aggregator.
+  // Partial Upfront and All Upfront are cheaper again - All Upfront 3-year runs about 13% under
+  // the No Upfront rate - so the reserved figures here are the most conservative of the three.
+  // They are list prices: no EDP, no private pricing.
+  var AWS = {
+    region: "ap-south-1 (Asia Pacific, Mumbai)",
+    priced: "9 November 2026",         // retrieved
+    published: "7 November 2026",      // AWS price list publication date
+    hours: 730,          // AWS billing month
+    months: 12,
+    gp3: 0.0912,         // EBS gp3, USD per GB-month
+    sc1: 0.0174,         // EBS sc1 Cold HDD, USD per GB-month — nearline tiers only
+    gbPerTb: 1024,
+    // [instance, vCPU, RAM GiB, GPUs, on-demand USD/hr, 3-yr RI USD/hr]
+    catalog: [
+      ["c6i.large",        2,    4, 0,  0.08500, 0.0386],
+      ["c6i.xlarge",       4,    8, 0,  0.17000, 0.0771],
+      ["c6i.2xlarge",      8,   16, 0,  0.34000, 0.1542],
+      ["c6i.4xlarge",     16,   32, 0,  0.68000, 0.3085],
+      ["c6i.8xlarge",     32,   64, 0,  1.36000, 0.6169],
+      ["c6i.12xlarge",    48,   96, 0,  2.04000, 0.9253],
+      ["c6i.16xlarge",    64,  128, 0,  2.72000, 1.2338],
+      ["c6i.24xlarge",    96,  192, 0,  4.08000, 1.8507],
+      ["c6i.32xlarge",   128,  256, 0,  5.44000, 2.4676],
+      ["m6i.large",        2,    8, 0,  0.10100, 0.0459],
+      ["m6i.xlarge",       4,   16, 0,  0.20200, 0.0919],
+      ["m6i.2xlarge",      8,   32, 0,  0.40400, 0.1837],
+      ["m6i.4xlarge",     16,   64, 0,  0.80800, 0.3674],
+      ["m6i.8xlarge",     32,  128, 0,  1.61600, 0.7348],
+      ["m6i.12xlarge",    48,  192, 0,  2.42400, 1.1023],
+      ["m6i.16xlarge",    64,  256, 0,  3.23200, 1.4697],
+      ["m6i.24xlarge",    96,  384, 0,  4.84800, 2.2045],
+      ["m6i.32xlarge",   128,  512, 0,  6.46400, 2.9393],
+      ["r6i.large",        2,   16, 0,  0.13000, 0.0590],
+      ["r6i.xlarge",       4,   32, 0,  0.26000, 0.1179],
+      ["r6i.2xlarge",      8,   64, 0,  0.52000, 0.2359],
+      ["r6i.4xlarge",     16,  128, 0,  1.04000, 0.4717],
+      ["r6i.8xlarge",     32,  256, 0,  2.08000, 0.9435],
+      ["r6i.12xlarge",    48,  384, 0,  3.12000, 1.4152],
+      ["r6i.16xlarge",    64,  512, 0,  4.16000, 1.8870],
+      ["r6i.24xlarge",    96,  768, 0,  6.24000, 2.8305],
+      ["r6i.32xlarge",   128, 1024, 0,  8.32000, 3.7740],
+      ["x2iedn.xlarge",    4,  128, 0,  0.86013, 0.2759],
+      ["x2iedn.2xlarge",   8,  256, 0,  1.72025, 0.5518],
+      ["x2iedn.4xlarge",  16,  512, 0,  3.44050, 1.1036],
+      ["x2iedn.8xlarge",  32, 1024, 0,  6.88100, 2.2072],
+      ["x2iedn.16xlarge", 64, 2048, 0, 13.76200, 4.4143],
+      ["x2iedn.24xlarge", 96, 3072, 0, 20.64300, 6.6215],
+      ["x2iedn.32xlarge",128, 4096, 0, 27.52400, 8.8286],
+      ["g6.4xlarge",      16,   64, 1,  1.58889, 0.7293],
+      ["g6.8xlarge",      32,  128, 1,  2.41888, 1.1103],
+      ["g6.12xlarge",     48,  192, 4,  5.52558, 2.5362],
+      ["g6.16xlarge",     64,  256, 1,  4.07886, 1.8722],
+      ["g6.24xlarge",     96,  384, 4,  8.01555, 3.6791],
+      ["g6.48xlarge",    192,  768, 8, 16.03110, 7.3583]
+    ]
+  };
+
+  // ---- Database licences --------------------------------------------------------------------
+  // The licence is the largest line in an Oracle build and it is not an AWS charge, so it is
+  // counted separately and kept out of the monthly infrastructure figure.
+  //
+  // The rule that matters on AWS: Oracle's core factor table does NOT apply in an Authorized
+  // Cloud Environment. Processor licences are counted from the INSTANCE's total vCPUs — two
+  // vCPUs to one processor where hyper-threading is on, which it is on every shape here — and
+  // not from the cores the sizing asked for, nor from what Oracle actually uses. An instance
+  // taken one size up for its memory therefore carries licences for vCPUs the database will
+  // never touch, which is why the warehouse rows below cost what they do.
+  //
+  // Prices are list, from the Oracle Technology Global Price List of 15 September 2026 and
+  // Microsoft's SQL Server 2022 volume-licensing list. Nobody large pays list; treat these as
+  // the ceiling a negotiation starts from.
+  var LICENCE = {
+    source: "Oracle Technology Global Price List, 15 Sep 2026 · Microsoft SQL Server 2022 list",
+    supportPct: 0.22,                // Oracle Software Update Licence & Support, per year
+    saPct: 0.25,                     // Microsoft Software Assurance, per year
+    oracle: { ee: 47500, part: 11500, adg: 11500, imdb: 23000 },
+    sqlserver: { perCore: 7561.50, minCores: 4 },
+    coreFactor: 0.5                  // on-premises x86 core factor — the comparison line only
+  };
+
+  // Two vCPUs to one processor. The socket minimum that rounds four vCPUs down to one licence
+  // is a Standard Edition rule; Enterprise Edition is counted per processor throughout.
+  function oracleProcs(vcpu) { return Math.ceil(vcpu / 2); }
+
+  // What one database row costs to license, given the instance it landed on.
+  function dbLicence(env, r, inst, s, m) {
+    var E = ENGINES[s.engine];
+    if (s.engine === "postgresql") {
+      return { units: 0, unit: "—", licence: 0, support: 0, opt: 0, optSupport: 0,
+        onPremUnits: 0, onPremLicence: 0, parts: {},
+        note: "No licence fee. Citus, if the warehouse is to have a columnar store, is open source." };
+    }
+    if (s.engine === "sqlserver") {
+      var cores = Math.max(LICENCE.sqlserver.minCores, inst[1]) * r[2];
+      var lic = cores * LICENCE.sqlserver.perCore;
+      return { units: cores, unit: "core licences", licence: lic, support: lic * LICENCE.saPct,
+        opt: 0, optSupport: 0,
+        onPremUnits: Math.max(LICENCE.sqlserver.minCores, r[3]) * r[2],
+        onPremLicence: Math.max(LICENCE.sqlserver.minCores, r[3]) * r[2] * LICENCE.sqlserver.perCore,
+        parts: { "Enterprise core licences": lic },
+        note: "Per vCPU on a listed provider, four-core minimum per instance. Software Assurance " +
+              "is required to bring licences to AWS. A readable Always On replica is licensed in full." };
+    }
+    // Oracle. Every node in a Data Guard configuration is licensed, standbys included.
+    var procs = oracleProcs(inst[1]) * r[2];
+    var onPremProcs = Math.ceil(r[3] * LICENCE.coreFactor) * r[2];
+    // Active Data Guard is what makes a standby readable, and Oracle wants it on both ends of
+    // the pair. The DR replicas are plain asynchronous standbys, which Enterprise Edition covers.
+    var readable = m.ha && ((env === "dc" && r[1].indexOf("Data warehouse") === 0) ||
+                            (env === "uat" && r[0] === "Database"));
+    var rate = LICENCE.oracle.ee + LICENCE.oracle.part + (readable ? LICENCE.oracle.adg : 0);
+    var lic = procs * rate;
+    var parts = {};
+    parts["Database Enterprise Edition"] = procs * LICENCE.oracle.ee;
+    parts["Partitioning"] = procs * LICENCE.oracle.part;
+    if (readable) { parts["Active Data Guard"] = procs * LICENCE.oracle.adg; }
+    return { units: procs, unit: "processor licences", licence: lic,
+      support: lic * LICENCE.supportPct,
+      opt: procs * LICENCE.oracle.imdb,
+      optSupport: procs * LICENCE.oracle.imdb * LICENCE.supportPct,
+      onPremUnits: onPremProcs, onPremLicence: onPremProcs * rate,
+      parts: parts, adg: readable,
+      note: readable ? "Active Data Guard, licensed on both ends of the readable pair." : "" };
+  }
+
+  // ---- Licence-aware instance choice ---------------------------------------------------------
+  // On a licensed engine the instance decides the licence, so the cheapest instance and the
+  // cheapest NODE are different questions. This picks the shape with the lowest three-year total
+  // of compute plus licence plus support, subject to the memory requirement — memory is not
+  // negotiable, a database that cannot hold its buffer cache is not a cheaper database.
+  //
+  // vCPU is allowed to fall short of the sizing's cores, and usually does, because the licence
+  // dominates by an order of magnitude. That shortfall is the whole of the trade: whether the
+  // smaller shape can still carry the drill budget is a benchmark question, and the comparison
+  // table says per node what it is worth to answer it.
+  var TCO_YEARS = 3;
+  // A shape holding at least this fraction of the sizing's cores counts as carrying them.
+  var CORE_HOLD = 0.9;
+
+  function nodeTco(inst, env, r, s, m) {
+    var compute = r[2] * inst[4] * AWS.hours * AWS.months * TCO_YEARS;
+    var L = dbLicence(env, r, inst, s, m);
+    return { inst: inst, compute: compute, licence: L.licence, support: L.support * TCO_YEARS,
+             total: compute + L.licence + L.support * TCO_YEARS, L: L,
+             coverage: r[3] ? inst[1] / r[3] : 1 };
+  }
+
+  // Every shape that holds the memory, cheapest three-year node first. The sheet shows the top
+  // of this list so the frontier is visible rather than just its winner.
+  function licenceLadder(env, r, s, m) {
+    var out = [];
+    AWS.catalog.forEach(function (c) {
+      if (c[2] < r[4]) { return; }
+      out.push(nodeTco(c, env, r, s, m));
+    });
+    out.sort(function (a, b) { return a.total - b.total || a.inst[1] - b.inst[1]; });
+    return out;
+  }
+
+  // Cheapest current-generation instance that meets the cores, the memory and, for the inference
+  // tier, the GPU count. Nothing in the catalogue is big enough only if the sliders have been
+  // pushed past anything ap-south-1 offers, in which case the largest shape is named and the
+  // shortfall is reported in the sheet rather than hidden.
+  function awsPick(cores, ram, gpus) {
+    var best = null;
+    AWS.catalog.forEach(function (c) {
+      if (c[1] < cores || c[2] < ram || c[3] < (gpus || 0)) return;
+      if (!best || c[4] < best[4] || (c[4] === best[4] && c[1] < best[1])) { best = c; }
+    });
+    return best || AWS.catalog[AWS.catalog.length - 1];
+  }
+
+  // Cost of one environment. Reused capability carries no AWS charge for the same reason it
+  // carries no server: the bank already runs it and the product connects to what is there.
+  function awsCost(env, s, m) {
+    var out = { compute: [], storage: [], srv: 0, cores: 0, gb: 0, odHr: 0, riHr: 0, stMonth: 0,
+                lic: [], licTotal: 0, licSupport: 0, licOpt: 0, licOptSupport: 0,
+                licUnits: 0, licOnPremUnits: 0, licOnPrem: 0,
+                opt: [], optSizedTco: 0, optBestTco: 0, optHeldTco: 0 };
+    rows(env, s, m).forEach(function (r) {
+      if (r[7] && s.has[r[7]]) return;
+      var inst = awsPick(r[3], r[4], r[0] === "Inference" ? 2 : 0);
+      // On a licensed engine the database rows get a second candidate, and the toggle decides
+      // which one is costed. Both are kept either way, so the comparison never goes stale.
+      if (r[0] === "Database" && dbLicence(env, r, inst, s, m).licence > 0) {
+        var ladder = licenceLadder(env, r, s, m);
+        var sizedTco = nodeTco(inst, env, r, s, m), bestTco = ladder[0];
+        // The cheapest shape that still carries nearly all the cores. The pure optimum usually
+        // gives up half of them; this one is the point on the curve a reviewer will actually
+        // sign, so it is costed and shown beside the other two rather than buried in the ladder.
+        var heldTco = null;
+        for (var li = 0; li < ladder.length; li++) {
+          if (ladder[li].coverage >= CORE_HOLD) { heldTco = ladder[li]; break; }
+        }
+        if (!heldTco) { heldTco = sizedTco; }
+        out.opt.push({ name: r[1], qty: r[2], cores: r[3], ram: r[4],
+                       sized: sizedTco, best: bestTco, held: heldTco,
+                       ladder: ladder.slice(0, 5) });
+        out.optSizedTco += sizedTco.total;
+        out.optBestTco += bestTco.total;
+        out.optHeldTco += heldTco.total;
+        if (s.licopt === "hold") { inst = heldTco.inst; }
+        else if (s.licopt === "min") { inst = bestTco.inst; }
+      }
+      var gb = Math.round(r[6] * AWS.gbPerTb);
+      var nearline = r[0] === "Backup";
+      if (r[0] === "Database") {
+        var L = dbLicence(env, r, inst, s, m);
+        out.lic.push({ name: r[1], qty: r[2], cores: r[3], inst: inst[0], vcpu: inst[1], L: L });
+        out.licTotal += L.licence;
+        out.licSupport += L.support;
+        out.licOpt += L.opt;
+        out.licOptSupport += L.optSupport;
+        out.licUnits += L.units;
+        out.licOnPremUnits += L.onPremUnits;
+        out.licOnPrem += L.onPremLicence;
+      }
+      out.compute.push({
+        cat: r[0], name: r[1], qty: r[2], cores: r[3], ram: r[4],
+        inst: inst[0], vcpu: inst[1], instRam: inst[2], od: inst[4], ri: inst[5],
+        short: inst[2] < r[4] ? "Largest shape available — short of the sizing"
+             : inst[1] < r[3] ? "Licence-optimised — " + inst[1] + " of " + r[3] +
+                                " cores, needs a benchmark" : ""
+      });
+      out.storage.push({
+        name: r[1], qty: r[2], vol: r[5], tb: r[6], gb: gb, totalGb: r[2] * gb,
+        cls: nearline ? "sc1 (Cold HDD)" : "gp3 (SSD)", rate: nearline ? AWS.sc1 : AWS.gp3
+      });
+      out.srv += r[2];
+      out.cores += r[2] * r[3];
+      out.gb += r[2] * gb;
+      out.odHr += r[2] * inst[4];
+      out.riHr += r[2] * inst[5];
+      out.stMonth += r[2] * gb * (nearline ? AWS.sc1 : AWS.gp3);
+    });
+    out.odMonth = out.odHr * AWS.hours;
+    out.riMonth = out.riHr * AWS.hours;
+    out.totalOd = out.odMonth + out.stMonth;
+    out.totalRi = out.riMonth + out.stMonth;
+    return out;
+  }
+
+  // ---- Rendering ---------------------------------------------------------------------------
+  var ENVS = [
+    { k: "uat", name: "UAT", note: "One instance per service against a two-node database cluster. The readable secondary is deliberate: without it the 85% read path is never exercised before production." },
+    { k: "dc", name: "Production — Primary Data Centre", note: "The live service, sized to hold the burst ceiling with one application host unavailable." },
+    { k: "dr", name: "Production — Disaster Recovery", note: "Warm standby. Data replicates continuously; queues rebuild from the service outboxes and the cache rebuilds from source." }
+  ];
+
+  function esc(x) { return String(x).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  function render() {
+    var s = state, m = model(s), out = document.getElementById("out"), html = "";
+    var grand = { proc: { srv: 0, cores: 0, ram: 0, tb: 0 }, dedicated: { srv: 0, cores: 0, ram: 0, tb: 0 } };
+    window.__csv = [];
+    window.__cost = [];
+
+    document.getElementById("basis").textContent =
+      fmt(s.users) + " users · " + s.conc + "% concurrency · " + fmt(s.cust) + " customers · " +
+      (s.opt === "k8s" ? "with Kubernetes" : "without Kubernetes");
+
+    html += '<section class="derived"><h2>Derived workload</h2><dl class="dgrid">' +
+      tile("Peak concurrent users", fmt(m.concurrent)) +
+      tile("Peak request rate", fmt(m.peakRPS), "req/s") +
+      tile("Read / write split", fmt(m.readRPS) + " / " + fmt(m.writeRPS), "req/s") +
+      tile("Service instances at peak", fmt(m.peakInst), "of " + fmt(m.ceilInst) + " ceiling") +
+      tile("Compute at peak", Math.round(m.peakCores), "cores, " + Math.round(m.peakMem) + " GiB") +
+      tile("Posting rows held", r1(m.rowsBn), "billion") +
+      tile("Peak DB connections", "~" + fmt(m.dbConns)) +
+      tile("CPU target per pod", Math.round(m.utilTarget * 100) + "%", "at p95 " + SLIDERS.api(s.api)) +
+      "</dl></section>";
+
+    ENVS.forEach(function (e) {
+      if (!s.envs[e.k]) return;
+      var rs = rows(e.k, s, m), t = totals(rs, s);
+      window.__cost.push({ key: e.k, name: e.name, c: awsCost(e.k, s, m) });
+      ["proc", "dedicated"].forEach(function (key) {
+        ["srv", "cores", "ram", "tb"].forEach(function (f) { grand[key][f] += t[key][f]; });
+      });
+
+      html += '<h3 class="env">' + esc(e.name) + "</h3><p class=\"envnote\">" + esc(e.note) + "</p>";
+      html += '<div class="tscroll"><table><thead><tr>' +
+        "<th>Server type</th><th class=\"n\">Qty</th><th class=\"n\">Cores</th><th class=\"n\">RAM</th>" +
+        "<th>Hard drive / volumes</th><th>OS supported</th><th>Database supported</th><th>Software required</th>" +
+        "</tr></thead><tbody>";
+
+      window.__csv.push([e.name], ["Server type", "Qty", "Cores each", "RAM GiB each", "Volumes each", "OS supported", "Database supported", "Software required", "Status"]);
+
+      rs.forEach(function (r) {
+        var reused = r[7] && s.has[r[7]];
+        html += '<tr' + (reused ? ' class="reused"' : "") + '>' +
+          '<td class="srv"><span class="cat">' + esc(r[0]) + "</span>" + esc(r[1]) +
+          (reused ? ' <span class="pill r">reused</span>' : (r[7] ? "" : ' <span class="pill p">dedicated</span>')) + "</td>" +
+          '<td class="n">' + r[2] + "</td><td class=\"n\">" + r[3] + '</td><td class="n">' + r[4] + " GiB</td>" +
+          "<td>" + esc(r[5]) + "</td><td>" + esc(r[8]) + "</td><td>" + esc(r[9] || "Not applicable") + "</td>" +
+          "<td>" + esc(r[10] || "") + "</td></tr>";
+        window.__csv.push([r[0] + " — " + r[1], r[2], r[3], r[4], r[5], r[8], r[9] || "Not applicable", r[10] || "", reused ? "Reused" : (r[7] ? "Procure" : "Dedicated")]);
+      });
+
+      html += '</tbody><tfoot><tr><td>Total to procure</td><td class="n">' + t.proc.srv +
+        '</td><td class="n">' + fmt(t.proc.cores) + '</td><td class="n">' + fmt(t.proc.ram) +
+        " GiB</td><td colspan=\"4\">" + tb(t.proc.tb) + " usable &nbsp;·&nbsp; dedicated capacity alone: " +
+        t.dedicated.srv + " servers, " + fmt(t.dedicated.cores) + " cores</td></tr></tfoot></table></div>";
+      window.__csv.push(["TOTAL TO PROCURE", t.proc.srv, t.proc.cores, t.proc.ram, tb(t.proc.tb), "", "", "", ""], []);
+    });
+
+    html += '<section class="grand"><h3>All selected environments</h3><div class="tscroll"><table><thead><tr>' +
+      "<th>Scope</th><th class=\"n\">Servers</th><th class=\"n\">Cores</th><th class=\"n\">RAM</th><th class=\"n\">Storage</th>" +
+      "</tr></thead><tbody>" +
+      grow("Procuring everything", grand.proc) +
+      grow("Dedicated capacity only", grand.dedicated) +
+      "</tbody></table></div></section>";
+
+    html += costHTML();
+    html += licHTML();
+    html += optHTML();
+
+    html += '<section class="notes"><h3>How these figures are derived</h3><ul>' +
+      "<li><b>The latency budget sets how hard a pod may be driven.</b> A looser p95 permits more queueing, so the autoscaler holds a higher CPU target and each pod serves more requests — but a pod's capacity is fixed by CPU, so the gain saturates. Four times the budget is nowhere near four times the throughput.</li>" +
+      "<li><b>Application hosts</b> hold the burst ceiling, or expected peak with one host down, whichever is larger. " +
+      (s.opt === "vm" ? "Without Kubernetes a further 25% covers static provisioning, lost bin-packing and coarser failure granularity."
+                      : "16 cores to 64 GiB matches the services' own 500 millicore to 1 GiB request ratio, so neither dimension strands first.") + "</li>" +
+      "<li><b>Quantities of three or four</b> are quorum and erasure-coding minimums, not load: etcd, RabbitMQ and Redis Sentinel need a majority; erasure coding needs four nodes to survive one loss.</li>" +
+      "<li><b>Warehouse cores</b> scale with the square root of read rate times row count, because columnstore scans parallelise across cores. <b>Operational database cores</b> scale with write rate, where connection handling and log flush dominate.</li>" +
+      "<li><b>Every figure is a planning assumption.</b> Confirm the bank's real concurrency profile and volumes in sprint 0, then validate against the service levels with a load test.</li>" +
+      "</ul></section>";
+
+    html += guideHTML();
+
+    out.innerHTML = html;
+    updateStatus(grand);
+  }
+
+  // Total cores across the selected environments, for a hypothetical change to one input.
+  // Used to tell the user what a control is actually worth before they drag it.
+  function coresWith(over) {
+    var s = Object.assign({}, state, over || {});
+    var m = model(s), c = 0;
+    ENVS.forEach(function (e) { if (s.envs[e.k]) { c += totals(rows(e.k, s, m), s).proc.cores; } });
+    return c;
+  }
+
+  // For all four targets a higher number is the easier-on-hardware direction: a longer time
+  // budget, or a better cache hit rate. So "easier" is always one step up.
+  // Compared against the whole remaining range in each direction, not one notch. A single step
+  // steps over thresholds: at a 2-second message budget one notch saves nothing, while going
+  // all the way to 20 saves 16 cores, and the second of those is what someone wants to know.
+  function effectOf(key) {
+    var el = document.getElementById(key);
+    var min = Number(el.min), max = Number(el.max), now = state[key];
+    var base = coresWith({}), up = coresWith(mk(key, max)), down = coresWith(mk(key, min));
+    var fmtv = SLIDERS[key], parts = [];
+    if (now >= max) {
+      parts.push("Already at the loosest setting");
+    } else if (up === base) {
+      parts.push("Nothing further to save past " + fmtv(now));
+    } else {
+      parts.push((base - up) + " cores saved at " + fmtv(max));
+    }
+    if (now > min && down !== base) {
+      parts.push("+" + (down - base) + " cores at " + fmtv(min));
+    }
+    return parts.join(" · ");
+  }
+  function mk(k, v) { var o = {}; o[k] = v; return o; }
+
+  // Plain-language guide to every input. Static, but rendered with the results so it sits
+  // at the foot of the column the figures are in.
+  // [target, input name, what it means, what it changes]. `target` is a CSS selector for the
+  // control this describes; the same row feeds both its hover tooltip and the table at the
+  // foot of the page, so the two can never say different things.
+  var GUIDE = [
+    ["Workload", [
+      ["#users", "Provisioned users",
+        "How many people have an account, whether or not they are using it right now — the size of the licence list.",
+        "On its own, very little. What matters is how many are signed in at the same time, which is the next control."],
+      ["#conc", "Peak concurrency",
+        "Of those people, the share actually using the system at the busiest moment of the day.",
+        "<b>The most important input on this page.</b> 10,000 users at 30% is 3,000 people at once, and nearly every figure here follows from that 3,000 rather than from the 10,000."],
+      ["#cust", "Customers (client entities)",
+        "How many companies the bank banks.",
+        "How much data there is: database size, cache memory, document storage. It barely touches the application servers, because a screen costs the same to draw whether the bank has 50,000 customers or 500,000."],
+      ["#rpm", "Requests per active user per minute",
+        "How busy one person is — screens opened, drill-downs, things saved. Twelve is someone working steadily, not hammering the keyboard.",
+        "Multiplied by the concurrent users, this is the request rate the whole system has to carry."],
+      ["#readpct", "Read share of traffic",
+        "How much of the work is looking things up, against changing them.",
+        "Where the load lands. Reads are served by the warehouse and the cache; writes go to the operational database. Raising this shifts work from one to the other rather than adding it."]
+    ]],
+    ["Performance targets", [
+      ["#api", "API p95",
+        "How long a screen is allowed to take. “p95” means 95 out of every 100 requests finish inside this time; the slowest 1 in 20 may take longer.",
+        "How hard each server may be driven before it needs a neighbour. A looser limit means fewer servers — but the gain runs out around 2 seconds, because a server's capacity is set by its CPU, not by how long you are willing to wait."],
+      ["#drill", "Drill page",
+        "How long opening a drill-down into underlying transactions may take.",
+        "The data warehouse, and nothing else. That is where the large scans happen, and a longer allowance means each scan needs less parallel horsepower."],
+      ["#msg", "Message processing",
+        "How long a background event — a booking, a feed update — may sit before it is handled.",
+        "The message broker alone. A longer allowance tolerates a deeper backlog, so fewer broker nodes are needed to drain it in time."],
+      ["#hit", "Cache hit rate",
+        "How often a repeated read can be answered from memory instead of going to the database.",
+        "<b>The sharpest of the four targets.</b> At 80%, only 1 read in 5 reaches the warehouse. At 60% that doubles and puts the cores straight back onto it — which is why this is a target to engineer for, not to hope for."]
+    ]],
+    ["Data volumes", [
+      ["#post", "Postings per day",
+        "How many transaction lines land each day.",
+        "The size of the warehouse, together with the retention setting below."],
+      ["#hist", "History retained",
+        "How far back the warehouse keeps transaction-level detail.",
+        "Warehouse storage, almost directly — halve the months and you roughly halve the terabytes. Cores move far less, because a scan is bounded by the slice it reads, not by everything kept."]
+    ]],
+    ["Availability", [
+      ["#ha-seg", "Availability",
+        "Whether this is a production deployment that survives a server failure, or a pilot that does not.",
+        "<b>More than anything else on this page.</b> Highly available means paired databases, quorum counts of three for the broker, cache and control plane, and a three-host application floor. Pilot means a single node of each. It is not half the size: dropping the readable standby puts the read path on the warehouse primary, which then needs about 30% more cores. What a pilot gives up is failover, the drill budget and the 99.5% target — so it is a way to try the product, not to run it."]
+    ]],
+    ["Database engine", [
+      ["#engine-seg", "Database engine",
+        "Which database the bank will run. It changes the engine named in every database row, the operating systems those servers support, and the software to install on them.",
+        "<b>The warehouse, through one thing: whether the engine has a columnar store.</b> SQL Server Enterprise includes one. Oracle needs the separately licensed In-Memory option and PostgreSQL needs the Citus extension, so without those the same drill scans need about 1.5x the cores and the postings fact compresses about 1.8x less. Those two multipliers are planning estimates and want a benchmark. <b>Oracle is not supported by the product today</b> — see architecture/oracle-support-gap.md."]
+    ]],
+    ["Pod and node sizing", [
+      ["#podcpu", "CPU request per pod",
+        "How much processor each copy of a service reserves for itself. Everything in the application tier is counted up from this one number.",
+        "<b>The softest number on this page and the one with the most leverage.</b> It has never been measured against a running service — it is a sensible starting guess. Dropping it from 500m to 300m takes the production pool from 5 hosts to 3. A load test is what settles it."],
+      ["#podmem", "Memory request per pod",
+        "How much memory each copy of a service reserves. The edge gateway is the exception at 512 MiB, because it holds no database connections.",
+        "The memory side of the host pool. It rarely decides the host count, because these services run out of processor before they run out of memory — but set it too low and the JVM is killed under load."],
+      ["#nodecpu", "Cores per application host",
+        "The size of one server in the application pool. Memory follows at four times the cores.",
+        "Server count and total cores, in opposite directions. Many small hosts waste cores on per-host overhead; few large ones waste them on the three-host minimum and lose more capacity when one fails. Around 12 to 24 cores is usually the sweet spot."]
+    ]],
+    ["Deployment and scope", [
+      ["#opt-seg", "With / without Kubernetes",
+        "Whether the services run on Kubernetes, which starts and stops copies by itself as load moves, or as ordinary programs on a fixed set of servers.",
+        "Without it you must buy for the busiest moment of the day and leave it running all day, so the application tier grows by about a quarter. Total cores come out much the same; what you lose is automatic scaling, self-healing and rolling release."],
+      ["#env-checks", "Environments",
+        "Which of the three sets of hardware to count: the test environment, the live site, and the standby site.",
+        "Everything, proportionally. Each is a complete environment in its own right."],
+      ["#uatperf", "Size UAT for load testing",
+        "Makes the test environment large enough that a load test run there tells you something about the live site.",
+        "Adds application hosts and warehouse storage to UAT. Without it, UAT proves the software works, not that it performs."],
+      ["#gpu", "On-premises model serving",
+        "Whether the AI features run on the bank's own GPUs instead of calling an approved outside service.",
+        "Adds two GPU servers per site. Choose it when the bank will not allow any traffic to leave the data centre."],
+      ["#licopt-seg", "Database instance choice",
+        "Whether each database instance is chosen to meet the core count, or to minimise the three-year total of compute, licence and support.",
+        "<b>Only the database rows, and only on a licensed engine — but on Oracle it is the largest single lever on this page.</b> AWS counts the licence from the instance's vCPUs, not from the cores the database uses, so a shape taken one size up for its memory pays licences for cores that are never touched. “Hold 90%” takes the cheapest shape that still carries nearly all the cores; “Cheapest” takes the cheapest that holds the memory, and gives up much of the core count. Memory is held in full either way."],
+      ["#reuse-box", "Bank already operates",
+        "Tick each capability the bank already runs — load balancers, object storage, monitoring, backup, and so on.",
+        "<b>The biggest single lever on server count, and it costs nothing.</b> Ticked lines drop out of the total, because the product connects to what the bank has instead of asking for another one."],
+      ["#fx", "USD → INR",
+        "The rate the AWS figures are converted at.",
+        "Only the rupee columns. It is written into the Excel workbook as a single editable cell, so the rate can be changed again after the file is opened, and nothing in the sizing moves with it."]
+    ]]
+  ];
+
+  // Native HTML tooltips, from the same rows. Re-applied after any panel rebuild.
+  function applyTooltips() {
+    GUIDE.forEach(function (grp) {
+      grp[1].forEach(function (r) {
+        var el = document.querySelector(r[0]);
+        if (!el) return;
+        var text = r[1] + " — " + stripTags(r[2]) + "\n\nWhat it changes: " + stripTags(r[3]);
+        // Put it on the whole field or group, so the label and the control both carry it.
+        var host = el.closest(".field") || el.closest("label") || el.closest(".checks") || el;
+        host.setAttribute("title", text);
+        if (host !== el) { el.setAttribute("title", text); }
+      });
+    });
+  }
+  function stripTags(s) { return s.replace(/<[^>]+>/g, ""); }
+
+  function guideHTML() {
+    var h = '<section class="guide"><h3>What each input does</h3>';
+    GUIDE.forEach(function (grp) {
+      h += '<h4>' + esc(grp[0]) + "</h4>";
+      h += '<div class="tscroll"><table><thead><tr><th>Input</th><th>What it means</th><th>What it changes</th></tr></thead><tbody>';
+      grp[1].forEach(function (r) {
+        h += "<tr><td><b>" + esc(r[1]) + "</b></td><td>" + r[2] + "</td><td>" + r[3] + "</td></tr>";
+      });
+      h += "</tbody></table></div>";
+    });
+    return h + "</section>";
+  }
+
+  // ---- AWS cost table, rendered beside the sizing it is priced from --------------------------
+  function usd(v) { return "$" + Math.round(v).toLocaleString("en-US"); }
+  function inr(v) { return "₹" + Math.round(v).toLocaleString("en-IN"); }
+
+  function costHTML() {
+    var cs = window.__cost || [];
+    if (!cs.length) { return ""; }
+    var fx = state.fx, sum = { srv: 0, cores: 0, gb: 0, od: 0, ri: 0 };
+    var body = "";
+    cs.forEach(function (e) {
+      var c = e.c;
+      sum.srv += c.srv; sum.cores += c.cores; sum.gb += c.gb;
+      sum.od += c.totalOd; sum.ri += c.totalRi;
+      body += "<tr><td>" + esc(e.name) + '</td><td class="n">' + c.srv +
+        '</td><td class="n">' + fmt(c.cores) + '</td><td class="n">' + fmt(c.gb) +
+        '</td><td class="n">' + usd(c.totalOd) + '</td><td class="n">' + inr(c.totalOd * fx) +
+        '</td><td class="n">' + usd(c.totalOd * AWS.months) + '</td><td class="n">' +
+        inr(c.totalOd * AWS.months * fx) + '</td><td class="n">' + usd(c.totalRi) +
+        '</td><td class="n">' + usd(c.totalRi * AWS.months) + "</td></tr>";
+    });
+    return '<section class="grand"><h3>AWS India indicative cost — ' + esc(AWS.region) + "</h3>" +
+      '<div class="tscroll"><table><thead><tr><th>Environment</th><th class="n">Servers</th>' +
+      '<th class="n">Cores</th><th class="n">Storage GB</th><th class="n">Monthly USD</th>' +
+      '<th class="n">Monthly INR</th><th class="n">Annual USD</th><th class="n">Annual INR</th>' +
+      '<th class="n">Monthly USD<br>3-yr RI</th><th class="n">Annual USD<br>3-yr RI</th>' +
+      "</tr></thead><tbody>" + body +
+      '</tbody><tfoot><tr><td>All selected environments</td><td class="n">' + sum.srv +
+      '</td><td class="n">' + fmt(sum.cores) + '</td><td class="n">' + fmt(sum.gb) +
+      '</td><td class="n">' + usd(sum.od) + '</td><td class="n">' + inr(sum.od * fx) +
+      '</td><td class="n">' + usd(sum.od * AWS.months) + '</td><td class="n">' +
+      inr(sum.od * AWS.months * fx) + '</td><td class="n">' + usd(sum.ri) +
+      '</td><td class="n">' + usd(sum.ri * AWS.months) + "</td></tr></tfoot></table></div>" +
+      '<p class="envnote" style="margin:11px 14px 13px">EC2 on-demand Linux and EBS at ' +
+      esc(AWS.region) + " list prices, published " + esc(AWS.published) + " and retrieved " +
+      esc(AWS.priced) + ", converted at " +
+      fmt(fx) + " INR per USD. One core is priced as one vCPU; a strict core-for-core rebuild " +
+      "costs close to twice this. Infrastructure only — database licences are in the next " +
+      "table. Excludes OS subscriptions, data transfer, load balancing, snapshots and AWS " +
+      "Support. <b>Download the Excel workbook for the per-server working.</b></p></section>";
+  }
+
+  // The licence is a capital line plus an annual support stream, not a monthly one, so it gets
+  // its own table rather than being folded into the infrastructure figure. On Oracle it is
+  // normally several times the whole AWS bill, which is the point of showing them side by side.
+  function licHTML() {
+    var cs = window.__cost || [];
+    if (!cs.length) { return ""; }
+    var s = state, fx = s.fx, E = ENGINES[s.engine];
+    var sum = { units: 0, onPrem: 0, lic: 0, sup: 0, opt: 0, optSup: 0, aws: 0 };
+    var body = "", any = false;
+    cs.forEach(function (e) {
+      var c = e.c;
+      sum.aws += c.totalOd;
+      if (!c.lic.length) { return; }
+      any = true;
+      c.lic.forEach(function (x) {
+        sum.units += x.L.units; sum.onPrem += x.L.onPremUnits;
+        sum.lic += x.L.licence; sum.sup += x.L.support;
+        sum.opt += x.L.opt; sum.optSup += x.L.optSupport;
+        body += "<tr><td>" + esc(e.name) + "</td><td>" + esc(x.name) +
+          (x.L.adg ? ' <span class="pill p">Active Data Guard</span>' : "") +
+          '</td><td class="n">' + x.qty + '</td><td class="n">' + esc(x.inst) +
+          '</td><td class="n">' + x.vcpu + '</td><td class="n">' + fmt(x.L.units) +
+          '</td><td class="n">' + usd(x.L.licence) + '</td><td class="n">' +
+          inr(x.L.licence * fx) + '</td><td class="n">' + usd(x.L.support) +
+          '</td><td class="n">' + inr(x.L.support * fx) + "</td></tr>";
+      });
+    });
+    if (!any) { return ""; }
+
+    var zero = sum.lic === 0;
+    var h = '<section class="grand"><h3>Database licences — ' + esc(E.name) +
+      (zero ? "" : " (list price)") + "</h3>" +
+      '<div class="tscroll"><table><thead><tr><th>Environment</th><th>Node</th>' +
+      '<th class="n">Qty</th><th class="n">Instance</th><th class="n">vCPU</th>' +
+      '<th class="n">Licence<br>units</th><th class="n">Licence USD</th>' +
+      '<th class="n">Licence INR</th><th class="n">Support / yr USD</th>' +
+      '<th class="n">Support / yr INR</th></tr></thead><tbody>' + body +
+      '</tbody><tfoot><tr><td colspan="5">Total — all selected environments</td>' +
+      '<td class="n">' + fmt(sum.units) + '</td><td class="n">' + usd(sum.lic) +
+      '</td><td class="n">' + inr(sum.lic * fx) + '</td><td class="n">' + usd(sum.sup) +
+      '</td><td class="n">' + inr(sum.sup * fx) + "</td></tr></tfoot></table></div>";
+
+    // Three-year total, because a licence bought once against a bill paid monthly is the whole
+    // reason these two tables belong on the same page.
+    var aws3 = sum.aws * AWS.months * 3, sup3 = sum.sup * 3, all3 = aws3 + sum.lic + sup3;
+    h += '<div class="tscroll" style="border:0;border-top:1px solid var(--line)"><table>' +
+      '<thead><tr><th>Three-year total cost</th><th class="n">USD</th><th class="n">INR</th>' +
+      '<th class="n">Share</th></tr></thead><tbody>' +
+      tcoRow("AWS infrastructure (on-demand, 36 months)", aws3, fx, all3) +
+      tcoRow(esc(E.name) + " licences (one-off)", sum.lic, fx, all3) +
+      tcoRow("Licence support (3 × annual)", sup3, fx, all3) +
+      '</tbody><tfoot><tr><td>Total</td><td class="n">' + usd(all3) + '</td><td class="n">' +
+      inr(all3 * fx) + '</td><td class="n">100%</td></tr></tfoot></table></div>';
+
+    h += '<p class="envnote" style="margin:11px 14px 13px">' + esc(LICENCE.source) + ". ";
+    if (s.engine === "postgresql") {
+      h += "PostgreSQL carries no licence fee, and Citus is open source — but the sizing " +
+        "already pays for the missing columnar store in cores and storage, at " + E.whCpu +
+        "x and " + E.whStore + "x on the warehouse.";
+    } else if (s.engine === "oracle") {
+      h += "<b>Oracle's core factor table does not apply on AWS.</b> Processors are counted from " +
+        "the instance's total vCPUs, two to one, so the " + fmt(sum.units) + " processors above " +
+        "answer to the shapes chosen, not to the " + fmt(sum.onPrem) + " the same cores would " +
+        "need on-premises at the 0.5 core factor — a difference of " +
+        usd((sum.units - sum.onPrem) * (LICENCE.oracle.ee + LICENCE.oracle.part)) +
+        " before support. Database In-Memory, which would remove the warehouse's 1.5x core and " +
+        "1.8x storage penalty, is a further " + usd(sum.opt) + " plus " + usd(sum.optSup) +
+        " a year and is <b>not</b> in the totals above. <b>Oracle is not supported by the " +
+        "product today</b> — see architecture/oracle-support-gap.md.";
+    } else {
+      h += "Licensed per vCPU on a listed provider with a four-core minimum, Software Assurance " +
+        "at " + Math.round(LICENCE.saPct * 100) + "% a year. A License Included AMI is the " +
+        "alternative, charged by the hour instead of up front.";
+    }
+    h += " Nobody large pays list; this is the ceiling a negotiation starts from.</p></section>";
+    return h;
+  }
+
+  // Sized shape against licence-optimal shape, per database node. The saving is three-year and
+  // includes the compute difference, which usually runs the other way and is dwarfed anyway.
+  function optHTML() {
+    var cs = window.__cost || [], s = state, fx = s.fx;
+    var any = cs.some(function (e) { return e.c.opt.length; });
+    if (!any) { return ""; }
+    var body = "", tot = { sized: 0, held: 0, best: 0 };
+    function cell(t, o) {
+      return '<td class="n">' + esc(t.inst[0]) + '</td><td class="n">' + t.inst[1] +
+        '</td><td class="n">' + Math.round(t.coverage * 100) + '%</td><td class="n">' +
+        fmt(t.L.units) + '</td><td class="n">' + usd(t.total) + '</td><td class="n">' +
+        (t.inst[0] === o.sized.inst[0] ? "—" : usd(o.sized.total - t.total)) + "</td>";
+    }
+    cs.forEach(function (e) {
+      e.c.opt.forEach(function (o) {
+        tot.sized += o.sized.total; tot.held += o.held.total; tot.best += o.best.total;
+        body += "<tr><td>" + esc(e.name) + "</td><td>" + esc(o.name) +
+          '</td><td class="n">' + o.cores + " c / " + o.ram + " G</td>" +
+          '<td class="n">' + esc(o.sized.inst[0]) + '</td><td class="n">' + o.sized.inst[1] +
+          '</td><td class="n">' + fmt(o.sized.L.units) + '</td><td class="n">' +
+          usd(o.sized.total) + "</td>" + cell(o.held, o) + cell(o.best, o) + "</tr>";
+      });
+    });
+    var saveHeld = tot.sized - tot.held, saveBest = tot.sized - tot.best;
+    var h = '<section class="grand"><h3>Licence-optimised database shapes — what the ' +
+      "core count is costing</h3>" +
+      '<div class="tscroll"><table><thead>' +
+      '<tr><th colspan="3"></th><th class="n" colspan="4">Sized for the cores</th>' +
+      '<th class="n" colspan="6">Cheapest holding ≥' + Math.round(CORE_HOLD * 100) +
+      '% of the cores</th><th class="n" colspan="6">Cheapest of all</th></tr>' +
+      '<tr><th>Environment</th><th>Node</th><th class="n">Sizing asks</th>' +
+      '<th class="n">Shape</th><th class="n">vCPU</th><th class="n">Proc.</th>' +
+      '<th class="n">3-yr total</th>' +
+      '<th class="n">Shape</th><th class="n">vCPU</th><th class="n">Cover</th>' +
+      '<th class="n">Proc.</th><th class="n">3-yr total</th><th class="n">Saving</th>' +
+      '<th class="n">Shape</th><th class="n">vCPU</th><th class="n">Cover</th>' +
+      '<th class="n">Proc.</th><th class="n">3-yr total</th><th class="n">Saving</th>' +
+      "</tr></thead><tbody>" + body +
+      '</tbody><tfoot><tr><td colspan="3">Total — database nodes only</td>' +
+      '<td colspan="3"></td><td class="n">' + usd(tot.sized) + '</td>' +
+      '<td colspan="4"></td><td class="n">' + usd(tot.held) + '</td><td class="n">' +
+      usd(saveHeld) + '</td><td colspan="4"></td><td class="n">' + usd(tot.best) +
+      '</td><td class="n">' + usd(saveBest) + "</td></tr></tfoot></table></div>" +
+      '<p class="envnote" style="margin:11px 14px 13px">Three-year totals are compute plus ' +
+      "licence plus support, and a candidate must hold the row's memory in full — memory is " +
+      "not negotiable, a database that cannot hold its buffer cache is not a cheaper database. " +
+      "vCPU is what the licence makes expensive, so the three columns are three answers to the " +
+      "same question. <b>The middle one is usually the one to take:</b> " + usd(saveHeld) +
+      " (" + inr(saveHeld * fx) + ") over three years while still carrying at least " +
+      Math.round(CORE_HOLD * 100) + "% of the cores the sizing asked for. Going all the way to " +
+      "the cheapest shape is worth " + usd(saveBest) + " but gives up far more of the core " +
+      "count, and whether that still carries the drill budget is the one question a load test " +
+      "has to answer. The Excel workbook lists the shapes in between. " +
+      (s.licopt === "hold" ? "<b>The figures above are on the ≥" +
+          Math.round(CORE_HOLD * 100) + "% shapes.</b>"
+        : s.licopt ? "<b>The figures above are on the cheapest shapes.</b>"
+        : "<b>Use the Licence-optimised DB shapes control to cost the whole model on either.</b>") +
+      "</p></section>";
+    return h;
+  }
+
+  function tcoRow(label, v, fx, all) {
+    return "<tr><td>" + label + '</td><td class="n">' + usd(v) + '</td><td class="n">' +
+      inr(v * fx) + '</td><td class="n">' + (all ? Math.round(v / all * 100) : 0) + "%</td></tr>";
+  }
+
+  function tile(label, value, sub) {
+    return "<div><dt>" + esc(label) + "</dt><dd>" + esc(value) +
+      (sub ? " <small>" + esc(sub) + "</small>" : "") + "</dd></div>";
+  }
+  function grow(label, t) {
+    return "<tr><td>" + esc(label) + '</td><td class="n">' + t.srv + '</td><td class="n">' +
+      fmt(t.cores) + '</td><td class="n">' + fmt(t.ram) + ' GiB</td><td class="n">' + tb(t.tb) + "</td></tr>";
+  }
+
+  function updateStatus(grand) {
+    var el = document.getElementById("status");
+    var want = (SCENARIO.expect || {})[state.opt];
+    var figuresHold = !want || (grand.proc.srv === want.srv && grand.proc.cores === want.cores);
+    if (atScenario() && figuresHold) {
+      el.className = "status match";
+      el.textContent = SCENARIO.label;
+    } else if (atScenario() && !figuresHold) {
+      el.className = "status diff";
+      el.textContent = "Model has drifted from " + want.srv + "/" + want.cores +
+        ": now " + grand.proc.srv + " servers · " + fmt(grand.proc.cores) + " cores";
+    } else {
+      el.className = "status diff";
+      el.textContent = grand.proc.srv + " servers · " + fmt(grand.proc.cores) + " cores";
+    }
+  }
+
+  // ---- Minimal .xlsx writer --------------------------------------------------------------
+  // A store-only ZIP (no compression) holding the five parts Excel needs. Money cells carry
+  // both the formula and its computed value, so the file reads correctly in any viewer and
+  // still recalculates when the exchange rate on the Assumptions sheet is changed.
+  var CRC = (function () {
+    var t = new Uint32Array(256);
+    for (var i = 0; i < 256; i++) {
+      var c = i;
+      for (var j = 0; j < 8; j++) { c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); }
+      t[i] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(b) {
+    var c = 0xFFFFFFFF;
+    for (var i = 0; i < b.length; i++) { c = CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); }
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function utf8(str) { return new TextEncoder().encode(str); }
+
+  function zipStore(files) {
+    var now = new Date();
+    var dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+    var dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    var local = [], central = [], offset = 0;
+    files.forEach(function (f) {
+      var name = utf8(f.name), data = f.data, crc = crc32(data), n = data.length;
+      var lh = new Uint8Array(30 + name.length), lv = new DataView(lh.buffer);
+      lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true); lv.setUint16(6, 0x0800, true);
+      lv.setUint16(8, 0, true); lv.setUint16(10, dosTime, true); lv.setUint16(12, dosDate, true);
+      lv.setUint32(14, crc, true); lv.setUint32(18, n, true); lv.setUint32(22, n, true);
+      lv.setUint16(26, name.length, true); lv.setUint16(28, 0, true);
+      lh.set(name, 30);
+      local.push(lh, data);
+      var ch = new Uint8Array(46 + name.length), cv = new DataView(ch.buffer);
+      cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+      cv.setUint16(8, 0x0800, true); cv.setUint16(10, 0, true);
+      cv.setUint16(12, dosTime, true); cv.setUint16(14, dosDate, true);
+      cv.setUint32(16, crc, true); cv.setUint32(20, n, true); cv.setUint32(24, n, true);
+      cv.setUint16(28, name.length, true); cv.setUint32(42, offset, true);
+      ch.set(name, 46);
+      central.push(ch);
+      offset += lh.length + n;
+    });
+    var cdSize = central.reduce(function (a, c) { return a + c.length; }, 0);
+    var eocd = new Uint8Array(22), ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true);
+    ev.setUint32(12, cdSize, true); ev.setUint32(16, offset, true);
+    var all = local.concat(central, [eocd]);
+    var size = all.reduce(function (a, c) { return a + c.length; }, 0);
+    var buf = new Uint8Array(size), at = 0;
+    all.forEach(function (c) { buf.set(c, at); at += c.length; });
+    return buf;
+  }
+
+  function xesc(x) {
+    return String(x).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function colName(i) {
+    var s = "";
+    while (i > 0) { var r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = (i - 1 - r) / 26; }
+    return s;
+  }
+
+  // Style indexes written into styles.xml below, in this order.
+  var ST = { base: 0, bold: 1, title: 2, head: 3, usd: 4, inr: 5, num: 6, rate: 7,
+             note: 8, boldUsd: 9, boldInr: 10, boldNum: 11, num2: 12, input: 13, sub: 14,
+             pct: 15 };
+
+  function STYLES_XML() {
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      '<numFmts count="6">' +
+      '<numFmt numFmtId="164" formatCode="#,##0"/>' +
+      '<numFmt numFmtId="165" formatCode="&quot;$&quot;#,##0"/>' +
+      '<numFmt numFmtId="166" formatCode="[$₹-4009]#,##0"/>' +
+      '<numFmt numFmtId="167" formatCode="&quot;$&quot;#,##0.0000"/>' +
+      '<numFmt numFmtId="168" formatCode="#,##0.00"/>' +
+      '<numFmt numFmtId="169" formatCode="0.0%"/>' +
+      "</numFmts>" +
+      '<fonts count="5">' +
+      '<font><sz val="10"/><name val="Arial"/></font>' +
+      '<font><b/><sz val="10"/><name val="Arial"/></font>' +
+      '<font><b/><sz val="14"/><name val="Arial"/></font>' +
+      '<font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font>' +
+      '<font><i/><sz val="10"/><color rgb="FF595959"/><name val="Arial"/></font>' +
+      "</fonts>" +
+      '<fills count="4">' +
+      '<fill><patternFill patternType="none"/></fill>' +
+      '<fill><patternFill patternType="gray125"/></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FF1F3864"/><bgColor indexed="64"/></patternFill></fill>' +
+      '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill>' +
+      "</fills>" +
+      '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      '<cellXfs count="16">' +
+      '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +                                   // 0 base
+      '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                     // 1 bold
+      '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                     // 2 title
+      '<xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' + // 3 head
+      '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +           // 4 usd
+      '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +           // 5 inr
+      '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +           // 6 num
+      '<xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +           // 7 rate
+      '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' + // 8 note
+      '<xf numFmtId="165" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>' + // 9
+      '<xf numFmtId="166" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>' + // 10
+      '<xf numFmtId="164" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>' + // 11
+      '<xf numFmtId="168" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +           // 12 num2
+      '<xf numFmtId="168" fontId="0" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>' + // 13 input
+      '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                     // 14 sub
+      '<xf numFmtId="169" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +           // 15 pct
+      "</cellXfs>" +
+      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+      "</styleSheet>";
+  }
+
+  // A cell is a string, a number, or { v: value, s: styleIndex, f: formula }.
+  function cellXml(ref, c) {
+    if (c === null || c === undefined || c === "") { return ""; }
+    if (typeof c !== "object") { c = { v: c }; }
+    if (c.v === null || c.v === undefined || c.v === "") { return ""; }
+    var s = ' s="' + (c.s || 0) + '"';
+    if (typeof c.v === "number") {
+      if (!isFinite(c.v)) { return ""; }
+      var v = Math.round(c.v * 1e6) / 1e6;
+      return "<c r=\"" + ref + "\"" + s + ">" + (c.f ? "<f>" + xesc(c.f) + "</f>" : "") +
+        "<v>" + v + "</v></c>";
+    }
+    return "<c r=\"" + ref + "\"" + s + " t=\"inlineStr\"><is><t xml:space=\"preserve\">" +
+      xesc(c.v) + "</t></is></c>";
+  }
+
+  function sheetXml(grid, widths) {
+    var cols = "";
+    if (widths && widths.length) {
+      cols = "<cols>" + widths.map(function (w, i) {
+        return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>';
+      }).join("") + "</cols>";
+    }
+    var body = grid.map(function (row, ri) {
+      if (!row || !row.length) { return ""; }
+      var cells = row.map(function (c, ci) { return cellXml(colName(ci + 1) + (ri + 1), c); }).join("");
+      return cells ? '<row r="' + (ri + 1) + '">' + cells + "</row>" : "";
+    }).join("");
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      cols + "<sheetData>" + body + "</sheetData></worksheet>";
+  }
+
+  // sheets: [{ name, grid, widths }]
+  function buildXlsx(sheets) {
+    var parts = [];
+    var ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+      '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>';
+    var sh = "", rels = "";
+    sheets.forEach(function (s, i) {
+      var n = i + 1;
+      ct += '<Override PartName="/xl/worksheets/sheet' + n + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+      sh += '<sheet name="' + xesc(s.name) + '" sheetId="' + n + '" r:id="rId' + n + '"/>';
+      rels += '<Relationship Id="rId' + n + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + n + '.xml"/>';
+      parts.push({ name: "xl/worksheets/sheet" + n + ".xml", data: utf8(sheetXml(s.grid, s.widths)) });
+    });
+    ct += "</Types>";
+    rels += '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>';
+
+    parts.unshift(
+      { name: "[Content_Types].xml", data: utf8(ct) },
+      { name: "_rels/.rels", data: utf8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+        "</Relationships>") },
+      { name: "xl/workbook.xml", data: utf8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+        "<sheets>" + sh + "</sheets><calcPr fullCalcOnLoad=\"1\"/></workbook>") },
+      { name: "xl/_rels/workbook.xml.rels", data: utf8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + rels +
+        "</Relationships>") },
+      { name: "xl/styles.xml", data: utf8(STYLES_XML()) }
+    );
+    return zipStore(parts);
+  }
+
+  // ---- The AWS cost workbook ----------------------------------------------------------------
+  // Sheet names are short because Excel caps them at 31 characters and the environment names
+  // are longer than that; the full name is the title row of each sheet.
+  var SHEET_KEY = { uat: "UAT", dc: "Production DC", dr: "Production DR" };
+  // Each licence component and the Assumptions cell holding its rate.
+  var LIC_CELL = {
+    "Database Enterprise Edition": "Assumptions!$B$13",
+    "Partitioning": "Assumptions!$B$14",
+    "Active Data Guard": "Assumptions!$B$15",
+    "Enterprise core licences": "Assumptions!$B$17"
+  };
+
+  function costWorkbook() {
+    var s = state, cs = window.__cost || [];
+    var FX = "Assumptions!$B$4", HRS = "Assumptions!$B$5", MOS = "Assumptions!$B$6",
+        GP3 = "Assumptions!$B$7", SC1 = "Assumptions!$B$8", TBC = "Assumptions!$B$9";
+    var sheets = [], envSheets = [];
+
+    // ---- one sheet per selected environment
+    cs.forEach(function (e) {
+      var c = e.c, g = [], w = [15, 38, 6, 11, 14, 17, 7, 11, 16, 16, 18, 15, 16, 18];
+      g[0] = [{ v: e.name + " — AWS " + AWS.region, s: ST.title }];
+      g[1] = [{ v: "One EC2 instance per server, Linux, running 24×7. Reused capability carries no " +
+                   "AWS charge and is not listed.", s: ST.sub }];
+      g[3] = ["Category", "Server type", "Qty", "Cores req.", "RAM req. (GiB)", "Instance type",
+              "vCPU", "RAM (GiB)", "On-demand USD/hr", "Monthly USD (OD)", "Monthly INR (OD)",
+              "3-yr RI USD/hr", "Monthly USD (RI)", "Monthly INR (RI)"].map(function (h) {
+                return { v: h, s: ST.head }; });
+      var r = 4;
+      c.compute.forEach(function (x) {
+        var n = r + 1;
+        g[r] = [x.cat, x.name + (x.short ? "  [" + x.short + "]" : ""),
+          { v: x.qty, s: ST.num }, { v: x.cores, s: ST.num }, { v: x.ram, s: ST.num },
+          x.inst, { v: x.vcpu, s: ST.num }, { v: x.instRam, s: ST.num },
+          { v: x.od, s: ST.rate },
+          { v: x.qty * x.od * AWS.hours, s: ST.usd, f: "C" + n + "*I" + n + "*" + HRS },
+          { v: x.qty * x.od * AWS.hours * s.fx, s: ST.inr, f: "J" + n + "*" + FX },
+          { v: x.ri, s: ST.rate },
+          { v: x.qty * x.ri * AWS.hours, s: ST.usd, f: "C" + n + "*L" + n + "*" + HRS },
+          { v: x.qty * x.ri * AWS.hours * s.fx, s: ST.inr, f: "M" + n + "*" + FX }];
+        r++;
+      });
+      var cFirst = 5, cLast = r, cTot = r + 1;
+      g[r] = [{ v: "", s: ST.bold }, { v: "Total — EC2 compute", s: ST.bold },
+        { v: c.srv, s: ST.boldNum, f: "SUM(C" + cFirst + ":C" + cLast + ")" },
+        "", "", "", "", "", "",
+        { v: c.odMonth, s: ST.boldUsd, f: "SUM(J" + cFirst + ":J" + cLast + ")" },
+        { v: c.odMonth * s.fx, s: ST.boldInr, f: "SUM(K" + cFirst + ":K" + cLast + ")" },
+        "",
+        { v: c.riMonth, s: ST.boldUsd, f: "SUM(M" + cFirst + ":M" + cLast + ")" },
+        { v: c.riMonth * s.fx, s: ST.boldInr, f: "SUM(N" + cFirst + ":N" + cLast + ")" }];
+      r += 2;
+
+      var sHead = r + 1;
+      g[r] = ["Server type", "Qty", "Volumes per server", "TB per server", "GB per server",
+              "Total GB", "Volume class", "USD/GB-month", "Monthly USD", "Monthly INR"].map(
+                function (h) { return { v: h, s: ST.head }; });
+      r++;
+      var sFirst = r + 1;
+      c.storage.forEach(function (x) {
+        var n = r + 1;
+        g[r] = [x.name, { v: x.qty, s: ST.num }, x.vol, { v: x.tb, s: ST.num2 },
+          { v: x.gb, s: ST.num, f: "ROUND(D" + n + "*" + TBC + ",0)" },
+          { v: x.totalGb, s: ST.num, f: "B" + n + "*E" + n },
+          x.cls,
+          { v: x.rate, s: ST.rate, f: (x.cls.indexOf("sc1") === 0 ? SC1 : GP3) },
+          { v: x.totalGb * x.rate, s: ST.usd, f: "F" + n + "*H" + n },
+          { v: x.totalGb * x.rate * s.fx, s: ST.inr, f: "I" + n + "*" + FX }];
+        r++;
+      });
+      var sLast = r, sTot = r + 1;
+      g[r] = [{ v: "Total — EBS storage", s: ST.bold },
+        { v: c.srv, s: ST.boldNum, f: "SUM(B" + sFirst + ":B" + sLast + ")" },
+        "", "", "",
+        { v: c.gb, s: ST.boldNum, f: "SUM(F" + sFirst + ":F" + sLast + ")" },
+        "", "",
+        { v: c.stMonth, s: ST.boldUsd, f: "SUM(I" + sFirst + ":I" + sLast + ")" },
+        { v: c.stMonth * s.fx, s: ST.boldInr, f: "SUM(J" + sFirst + ":J" + sLast + ")" }];
+
+      var nm = SHEET_KEY[e.key] + " cost";
+      envSheets.push({ key: e.key, sheet: nm, cTot: cTot, sTot: sTot, c: c });
+      sheets.push({ name: nm, grid: g, widths: w });
+    });
+
+    // ---- database licences, one sheet across every selected environment
+    var E = ENGINES[s.engine];
+    var comp = s.engine === "oracle"
+      ? ["Database Enterprise Edition", "Partitioning", "Active Data Guard"]
+      : s.engine === "sqlserver" ? ["Enterprise core licences"] : [];
+    var lg = [], licRows = 0;
+    var licTot = { units: 0, onPrem: 0, onPremLic: 0, lic: 0, sup: 0, opt: 0, optSup: 0,
+                   parts: {} };
+    comp.forEach(function (k) { licTot.parts[k] = 0; });
+    lg[0] = [{ v: "Database licences — " + E.name + ", list price", s: ST.title }];
+    lg[1] = [{ v: LICENCE.source + ". Every node in a replication pair is licensed, standbys " +
+                  "included. Nobody large pays list.", s: ST.sub }];
+    var lhead = ["Environment", "Node", "Qty", "Instance", "vCPU",
+                 s.engine === "sqlserver" ? "Core licences" : "Processor licences"]
+      .concat(comp.map(function (x) { return x + " USD"; }))
+      .concat(["Licence USD", "Licence INR",
+               (s.engine === "sqlserver" ? "Software Assurance" : "Support") + " / yr USD",
+               (s.engine === "sqlserver" ? "Software Assurance" : "Support") + " / yr INR"]);
+    lg[3] = lhead.map(function (h) { return { v: h, s: ST.head }; });
+    var lr = 4, licFirst = 5;
+    var cLic = colName(7), cLicInr = colName(7 + comp.length), cFirstComp = 7;
+    cLic = colName(6 + comp.length + 1);
+    cLicInr = colName(6 + comp.length + 2);
+    var cSup = colName(6 + comp.length + 3), cSupInr = colName(6 + comp.length + 4);
+    cs.forEach(function (e) {
+      e.c.lic.forEach(function (x) {
+        var n = lr + 1, row = [e.name, x.name, { v: x.qty, s: ST.num }, x.inst,
+                               { v: x.vcpu, s: ST.num }, { v: x.L.units, s: ST.num }];
+        comp.forEach(function (k) {
+          // Tie each component to its rate cell on the Assumptions sheet, so a negotiated
+          // discount can be entered once and read through the whole workbook.
+          var cell = LIC_CELL[k];
+          var has = x.L.parts[k] !== undefined;
+          row.push({ v: x.L.parts[k] || 0, s: ST.usd,
+                     f: (has && cell) ? "F" + n + "*" + cell : undefined });
+        });
+        var sumRange = comp.length
+          ? "SUM(" + colName(cFirstComp) + n + ":" + colName(6 + comp.length) + n + ")" : "";
+        row.push({ v: x.L.licence, s: ST.usd, f: sumRange || undefined });
+        row.push({ v: x.L.licence * s.fx, s: ST.inr, f: cLic + n + "*" + FX });
+        row.push({ v: x.L.support, s: ST.usd, f: cLic + n + "*Assumptions!$B$12" });
+        row.push({ v: x.L.support * s.fx, s: ST.inr, f: cSup + n + "*" + FX });
+        lg[lr] = row;
+        lr++; licRows++;
+        licTot.units += x.L.units; licTot.onPrem += x.L.onPremUnits;
+        licTot.onPremLic += x.L.onPremLicence;
+        comp.forEach(function (k) { licTot.parts[k] += x.L.parts[k] || 0; });
+        licTot.lic += x.L.licence; licTot.sup += x.L.support;
+        licTot.opt += x.L.opt; licTot.optSup += x.L.optSupport;
+      });
+    });
+    var licLast = lr, licTotRow = lr + 1;
+    if (licRows) {
+      var trow = [{ v: "Total", s: ST.bold }, "", "", "", "",
+                  { v: licTot.units, s: ST.boldNum, f: "SUM(F" + licFirst + ":F" + licLast + ")" }];
+      comp.forEach(function (k, i) {
+        var L = colName(cFirstComp + i);
+        trow.push({ v: licTot.parts[k], s: ST.boldUsd,
+                    f: "SUM(" + L + licFirst + ":" + L + licLast + ")" });
+      });
+      trow.push({ v: licTot.lic, s: ST.boldUsd, f: "SUM(" + cLic + licFirst + ":" + cLic + licLast + ")" });
+      trow.push({ v: licTot.lic * s.fx, s: ST.boldInr, f: "SUM(" + cLicInr + licFirst + ":" + cLicInr + licLast + ")" });
+      trow.push({ v: licTot.sup, s: ST.boldUsd, f: "SUM(" + cSup + licFirst + ":" + cSup + licLast + ")" });
+      trow.push({ v: licTot.sup * s.fx, s: ST.boldInr, f: "SUM(" + cSupInr + licFirst + ":" + cSupInr + licLast + ")" });
+      lg[lr] = trow;
+      lr += 2;
+
+      if (s.engine === "oracle") {
+        lg[lr] = [{ v: "Not included above", s: ST.bold }]; lr++;
+        var on = lr + 1;
+        lg[lr] = ["Database In-Memory (optional)", "Removes the warehouse's 1.5x core and 1.8x " +
+          "storage penalty", "", "", "", { v: licTot.units, s: ST.num, f: "F" + licTotRow },
+          "", "", "",
+          { v: licTot.opt, s: ST.usd, f: "F" + on + "*Assumptions!$B$16" },
+          { v: licTot.opt * s.fx, s: ST.inr, f: cLic + on + "*" + FX },
+          { v: licTot.optSup, s: ST.usd, f: cLic + on + "*Assumptions!$B$12" },
+          { v: licTot.optSup * s.fx, s: ST.inr, f: cSup + on + "*" + FX }];
+        lr += 2;
+        lg[lr] = [{ v: "For comparison — the same cores on-premises", s: ST.bold }]; lr++;
+        var op = lr + 1;
+        lg[lr] = ["On-premises processor licences", "Cores × the 0.5 x86 core factor, which " +
+          "AWS does not allow", "", "", "", { v: licTot.onPrem, s: ST.num },
+          "", "", "",
+          { v: licTot.onPremLic, s: ST.usd },
+          { v: licTot.onPremLic * s.fx, s: ST.inr, f: cLic + op + "*" + FX },
+          { v: licTot.onPremLic * LICENCE.supportPct, s: ST.usd, f: cLic + op + "*Assumptions!$B$12" },
+          { v: licTot.onPremLic * LICENCE.supportPct * s.fx, s: ST.inr, f: cSup + op + "*" + FX }];
+        lr++;
+        lg[lr] = [{ v: "•  Oracle's core factor table does not apply in an Authorized Cloud " +
+          "Environment. Processors are counted from the instance's total vCPUs, two to one, so a " +
+          "shape taken one size up for its memory carries licences for vCPUs the database never " +
+          "touches. That is the whole of the gap between " + fmt(licTot.units) + " and " +
+          fmt(licTot.onPrem) + " above.", s: ST.note }];
+        lr++;
+        lg[lr] = [{ v: "•  Oracle is not supported by the product today — see " +
+          "architecture/oracle-support-gap.md. These figures price a delivery scope item.", s: ST.note }];
+      } else if (s.engine === "sqlserver") {
+        lg[lr] = [{ v: "•  Licensed per vCPU on a listed provider, four-core minimum per " +
+          "instance. Software Assurance at " + Math.round(LICENCE.saPct * 100) + "% a year is " +
+          "required to bring licences to AWS. A License Included AMI is the alternative, charged " +
+          "by the hour instead of up front.", s: ST.note }];
+      }
+    } else {
+      lg[lr] = [{ v: E.name + " carries no licence fee" + (s.engine === "postgresql"
+        ? ", and Citus is open source — but the sizing already pays for the missing columnar " +
+          "store in cores and storage, at " + E.whCpu + "x and " + E.whStore + "x on the warehouse."
+        : "."), s: ST.note }];
+    }
+    sheets.push({ name: "Database licences", grid: lg,
+      widths: [30, 42, 6, 16, 7, 14].concat(comp.map(function () { return 22; }))
+        .concat([16, 18, 18, 20]) });
+
+    // ---- licence optimisation: the sized shape, the licence-optimal shape, and the shapes in
+    // between, so the middle of the curve is there to pick from rather than just its ends.
+    var hasOpt = cs.some(function (e) { return e.c.opt.length; });
+    if (hasOpt) {
+      var og = [], or_ = 0, optTot = { sized: 0, held: 0, best: 0 };
+      og[0] = [{ v: "Licence-optimised database shapes — what the core count is costing", s: ST.title }];
+      og[1] = [{ v: "Three-year totals are compute plus licence plus support. A candidate must " +
+                    "hold the row's memory; vCPU is allowed to fall short of the sizing's cores, " +
+                    "and the core cover column says by how much.", s: ST.sub }];
+      or_ = 3;
+      og[or_] = ["Environment", "Node", "Cores asked", "RAM asked (GiB)", "Shape", "vCPU",
+                 "RAM (GiB)", "Core cover", "Processor licences", "3-yr compute USD",
+                 "Licence USD", "3-yr support USD", "3-yr total USD", "3-yr total INR",
+                 "Saving vs sized USD", "Note"].map(function (h) { return { v: h, s: ST.head }; });
+      or_++;
+      cs.forEach(function (e) {
+        e.c.opt.forEach(function (o) {
+          optTot.sized += o.sized.total; optTot.held += o.held.total; optTot.best += o.best.total;
+          // The sized pick first, then the cheapest shapes that hold the memory.
+          var seen = {}, list = [{ t: o.sized, tag: "Sized — meets cores and memory" }];
+          seen[o.sized.inst[0]] = true;
+          o.ladder.forEach(function (t) {
+            if (seen[t.inst[0]]) { return; }
+            seen[t.inst[0]] = true;
+            list.push({ t: t, tag: t.inst[0] === o.best.inst[0]
+              ? "Cheapest of all — holds the memory only"
+              : t.inst[0] === o.held.inst[0]
+              ? "Cheapest holding ≥" + Math.round(CORE_HOLD * 100) + "% of the cores"
+              : "Alternative on the curve" });
+          });
+          list.forEach(function (x, i) {
+            var t = x.t, n = or_ + 1;
+            og[or_] = [i === 0 ? e.name : "", i === 0 ? o.name : "",
+              i === 0 ? { v: o.cores, s: ST.num } : "",
+              i === 0 ? { v: o.ram, s: ST.num } : "",
+              t.inst[0], { v: t.inst[1], s: ST.num }, { v: t.inst[2], s: ST.num },
+              { v: t.coverage, s: ST.pct }, { v: t.L.units, s: ST.num },
+              { v: t.compute, s: ST.usd }, { v: t.licence, s: ST.usd },
+              { v: t.support, s: ST.usd },
+              { v: t.total, s: ST.usd, f: "SUM(J" + n + ":L" + n + ")" },
+              { v: t.total * s.fx, s: ST.inr, f: "M" + n + "*" + FX },
+              { v: o.sized.total - t.total, s: ST.usd, f: "$M$" + (or_ + 1 - i) + "-M" + n },
+              { v: x.tag, s: ST.sub }];
+            or_++;
+          });
+          or_++;
+        });
+      });
+      [["On the sized shapes", optTot.sized, 0],
+       ["Cheapest holding ≥" + Math.round(CORE_HOLD * 100) + "% of the cores",
+        optTot.held, optTot.sized - optTot.held],
+       ["Cheapest of all", optTot.best, optTot.sized - optTot.best]
+      ].forEach(function (p) {
+        og[or_] = [{ v: "Total — database nodes only", s: ST.bold }, "", "", "", "", "", "",
+          "", "", "", "", "", { v: p[1], s: ST.boldUsd }, { v: p[1] * s.fx, s: ST.boldInr },
+          p[2] ? { v: p[2], s: ST.boldUsd } : "", { v: p[0], s: ST.sub }];
+        or_++;
+      });
+      or_ += 1;
+      [
+        "Memory is not negotiable: a database that cannot hold its buffer cache is not a cheaper " +
+        "database. Every candidate here holds the row's memory in full.",
+        "vCPU is negotiable only in the sense that the licence makes it expensive. The core cover " +
+        "column is the fraction of the sizing's cores the shape actually provides, and a figure " +
+        "below 100% is an open question, not a saving already banked.",
+        "The middle option is usually the one to take: " +
+        Math.round((optTot.sized - optTot.held) / 1000) + "k USD over three years while still " +
+        "carrying at least " + Math.round(CORE_HOLD * 100) + "% of the cores. Going all the way " +
+        "to the cheapest shape is worth " + Math.round((optTot.sized - optTot.best) / 1000) +
+        "k USD but gives up far more of the core count. Either figure is budget available for " +
+        "the load test that would settle it.",
+        "Oracle counts processors from the instance's total vCPUs, two to one, and its core factor " +
+        "table does not apply on AWS. That single rule is why a memory-optimised shape is so much " +
+        "cheaper per node than a general-purpose one of the same memory.",
+        "Reserved Instances apply to the compute column only; they do not touch the licence, which " +
+        "is why the licence dominates the three-year total either way."
+      ].forEach(function (t) { og[or_] = [{ v: "•  " + t, s: ST.note }]; or_++; });
+      sheets.push({ name: "Licence optimisation", grid: og,
+        widths: [26, 34, 11, 15, 17, 7, 11, 11, 17, 17, 16, 17, 17, 19, 19, 34] });
+    }
+
+    // ---- summary, built from the environment sheets rather than repeating their arithmetic
+    function ref(es, col, row) { return "'" + es.sheet + "'!$" + col + "$" + row; }
+    var sg = [], sw = [34, 10, 10, 13, 17, 19, 17, 19, 17, 19];
+    sg[0] = [{ v: "RM Platform on AWS India — indicative infrastructure cost", s: ST.title }];
+    sg[1] = [{ v: "Region " + AWS.region + " · Linux · 24×7 · list price, no discounts " +
+                  "· AWS price list published " + AWS.published + ", retrieved " + AWS.priced, s: ST.sub }];
+    sg[2] = [{ v: fmt(s.users) + " users · " + s.conc + "% concurrency · " + fmt(s.cust) +
+                  " customers · " + ENGINES[s.engine].name + " · " +
+                  (s.ha ? "highly available" : "pilot") + " · " +
+                  (s.opt === "k8s" ? "with Kubernetes" : "without Kubernetes"), s: ST.sub }];
+    sg[4] = [{ v: "On-demand", s: ST.bold }];
+    sg[5] = ["Environment", "Servers", "Cores", "Storage GB", "Monthly USD", "Monthly INR",
+             "Annual USD", "Annual INR", "3-year USD", "3-year INR"].map(function (h) {
+               return { v: h, s: ST.head }; });
+    var r = 6, first = 7, sumOd = 0, sumRi = 0, sumSrv = 0, sumCores = 0, sumGb = 0;
+    envSheets.forEach(function (es) {
+      var n = r + 1, c = es.c;
+      sumOd += c.totalOd; sumRi += c.totalRi;
+      sumSrv += c.srv; sumCores += c.cores; sumGb += c.gb;
+      sg[r] = [cs.filter(function (x) { return x.key === es.key; })[0].name,
+        { v: c.srv, s: ST.num, f: ref(es, "C", es.cTot) },
+        { v: c.cores, s: ST.num },
+        { v: c.gb, s: ST.num, f: ref(es, "F", es.sTot) },
+        { v: c.totalOd, s: ST.usd, f: ref(es, "J", es.cTot) + "+" + ref(es, "I", es.sTot) },
+        { v: c.totalOd * s.fx, s: ST.inr, f: "E" + n + "*" + FX },
+        { v: c.totalOd * AWS.months, s: ST.usd, f: "E" + n + "*" + MOS },
+        { v: c.totalOd * AWS.months * s.fx, s: ST.inr, f: "G" + n + "*" + FX },
+        { v: c.totalOd * AWS.months * 3, s: ST.usd, f: "G" + n + "*3" },
+        { v: c.totalOd * AWS.months * 3 * s.fx, s: ST.inr, f: "H" + n + "*3" }];
+      r++;
+    });
+    var last = r, odTot = r + 1;
+    sg[r] = [{ v: "All selected environments", s: ST.bold },
+      { v: sumSrv, s: ST.boldNum, f: "SUM(B" + first + ":B" + last + ")" },
+      { v: sumCores, s: ST.boldNum, f: "SUM(C" + first + ":C" + last + ")" },
+      { v: sumGb, s: ST.boldNum, f: "SUM(D" + first + ":D" + last + ")" },
+      { v: sumOd, s: ST.boldUsd, f: "SUM(E" + first + ":E" + last + ")" },
+      { v: sumOd * s.fx, s: ST.boldInr, f: "SUM(F" + first + ":F" + last + ")" },
+      { v: sumOd * AWS.months, s: ST.boldUsd, f: "SUM(G" + first + ":G" + last + ")" },
+      { v: sumOd * AWS.months * s.fx, s: ST.boldInr, f: "SUM(H" + first + ":H" + last + ")" },
+      { v: sumOd * AWS.months * 3, s: ST.boldUsd, f: "SUM(I" + first + ":I" + last + ")" },
+      { v: sumOd * AWS.months * 3 * s.fx, s: ST.boldInr, f: "SUM(J" + first + ":J" + last + ")" }];
+    r += 2;
+
+    sg[r] = [{ v: "With 3-year Standard Reserved Instances on compute", s: ST.bold }];
+    r++;
+    sg[r] = ["Environment", "", "", "", "Monthly USD", "Monthly INR", "Annual USD", "Annual INR",
+             "3-year USD", "3-year INR"].map(function (h) { return { v: h, s: ST.head }; });
+    r++;
+    var riFirst = r + 1;
+    envSheets.forEach(function (es) {
+      var n = r + 1, c = es.c;
+      sg[r] = [cs.filter(function (x) { return x.key === es.key; })[0].name, "", "", "",
+        { v: c.totalRi, s: ST.usd, f: ref(es, "M", es.cTot) + "+" + ref(es, "I", es.sTot) },
+        { v: c.totalRi * s.fx, s: ST.inr, f: "E" + n + "*" + FX },
+        { v: c.totalRi * AWS.months, s: ST.usd, f: "E" + n + "*" + MOS },
+        { v: c.totalRi * AWS.months * s.fx, s: ST.inr, f: "G" + n + "*" + FX },
+        { v: c.totalRi * AWS.months * 3, s: ST.usd, f: "G" + n + "*3" },
+        { v: c.totalRi * AWS.months * 3 * s.fx, s: ST.inr, f: "H" + n + "*3" }];
+      r++;
+    });
+    var riLast = r, riTot = r + 1;
+    sg[r] = [{ v: "All selected environments", s: ST.bold }, "", "", "",
+      { v: sumRi, s: ST.boldUsd, f: "SUM(E" + riFirst + ":E" + riLast + ")" },
+      { v: sumRi * s.fx, s: ST.boldInr, f: "SUM(F" + riFirst + ":F" + riLast + ")" },
+      { v: sumRi * AWS.months, s: ST.boldUsd, f: "SUM(G" + riFirst + ":G" + riLast + ")" },
+      { v: sumRi * AWS.months * s.fx, s: ST.boldInr, f: "SUM(H" + riFirst + ":H" + riLast + ")" },
+      { v: sumRi * AWS.months * 3, s: ST.boldUsd, f: "SUM(I" + riFirst + ":I" + riLast + ")" },
+      { v: sumRi * AWS.months * 3 * s.fx, s: ST.boldInr, f: "SUM(J" + riFirst + ":J" + riLast + ")" }];
+    r++;
+    sg[r] = [{ v: "Saving against on-demand", s: ST.bold }, "", "", "",
+      { v: sumOd - sumRi, s: ST.usd, f: "E" + odTot + "-E" + riTot },
+      { v: (sumOd - sumRi) * s.fx, s: ST.inr, f: "F" + odTot + "-F" + riTot },
+      { v: (sumOd - sumRi) * AWS.months, s: ST.usd, f: "G" + odTot + "-G" + riTot },
+      { v: (sumOd - sumRi) * AWS.months * s.fx, s: ST.inr, f: "H" + odTot + "-H" + riTot },
+      { v: (sumOd - sumRi) * AWS.months * 3, s: ST.usd, f: "I" + odTot + "-I" + riTot },
+      { v: (sumOd - sumRi) * AWS.months * 3 * s.fx, s: ST.inr, f: "J" + odTot + "-J" + riTot }];
+    r += 2;
+
+    // ---- three-year total. A licence bought once against a bill paid monthly is the whole
+    // reason the two sit on one sheet.
+    if (licRows) {
+      var LS = "'Database licences'!$" + cLic + "$" + licTotRow;
+      var LSup = "'Database licences'!$" + cSup + "$" + licTotRow;
+      sg[r] = [{ v: "Three-year total cost of ownership — " + E.name, s: ST.bold }];
+      r++;
+      sg[r] = ["", "", "", "", "USD", "INR", "", "", "Share of total", ""].map(function (h, i) {
+        return h ? { v: h, s: ST.head } : ""; });
+      r++;
+      var tcoFirst = r + 1;
+      var aws3 = sumOd * AWS.months * 3, sup3 = licTot.sup * 3;
+      var all3 = aws3 + licTot.lic + sup3;
+      [["AWS infrastructure (on-demand, 36 months)", aws3, "I" + odTot],
+       [E.name + " licences (one-off, list)", licTot.lic, LS],
+       ["Licence support (3 × annual)", sup3, LSup + "*3"]
+      ].forEach(function (p) {
+        var n = r + 1;
+        sg[r] = [p[0], "", "", "", { v: p[1], s: ST.usd, f: p[2] },
+          { v: p[1] * s.fx, s: ST.inr, f: "E" + n + "*" + FX }, "", "",
+          { v: all3 ? p[1] / all3 : 0, s: ST.pct, f: "IFERROR(E" + n + "/$E$" + (r + 4 - (n - tcoFirst)) + ",0)" }, ""];
+        r++;
+      });
+      var tcoLast = r;
+      sg[r] = [{ v: "Total", s: ST.bold }, "", "", "",
+        { v: all3, s: ST.boldUsd, f: "SUM(E" + tcoFirst + ":E" + tcoLast + ")" },
+        { v: all3 * s.fx, s: ST.boldInr, f: "SUM(F" + tcoFirst + ":F" + tcoLast + ")" },
+        "", "", { v: 1, s: ST.pct }, ""];
+      // Rewrite the share column now that the total's row is known.
+      for (var ti = tcoFirst; ti <= tcoLast; ti++) {
+        sg[ti - 1][8] = { v: all3 ? sg[ti - 1][4].v / all3 : 0, s: ST.pct,
+          f: "IFERROR(E" + ti + "/$E$" + (tcoLast + 1) + ",0)" };
+      }
+      r += 2;
+    }
+    [
+      "Converted at the rate in Assumptions!B4. Change that one cell and every rupee column in " +
+      "the workbook follows.",
+      "One on-premises core is priced as one AWS vCPU. An AWS vCPU is a single hyperthread, so a " +
+      "strict core-for-core rebuild needs roughly twice the vCPUs and costs close to twice this. " +
+      "Which is right is a benchmark question. ",
+      "Database licences are on the Database licences sheet and in the three-year total, not in " +
+      "the monthly figures. Still excluded: OS subscriptions beyond the Linux rate, data transfer, " +
+      "load balancers, NAT, snapshots, AWS Support, and any managed-service alternative. This " +
+      "prices a like-for-like server rebuild, not a re-platform.",
+      "Every figure is a planning estimate. Validate against the AWS Pricing Calculator and a " +
+      "load test before it reaches a commercial proposal."
+    ].forEach(function (t) { sg[r] = [{ v: "•  " + t, s: ST.note }]; r++; });
+    sheets.unshift({ name: "Summary", grid: sg, widths: sw });
+
+    // ---- assumptions
+    var ag = [], aw = [44, 16, 70];
+    ag[0] = [{ v: "Assumptions, rates and exclusions", s: ST.title }];
+    ag[2] = [{ v: "Global parameters — the yellow cells drive the whole workbook", s: ST.bold }];
+    ag[3] = ["USD → INR exchange rate", { v: s.fx, s: ST.input },
+             { v: "Edit this cell to re-price every rupee column.", s: ST.sub }];
+    ag[4] = ["Billable hours per month", { v: AWS.hours, s: ST.input },
+             { v: "AWS convention (730 h). Assumes every instance runs 24×7.", s: ST.sub }];
+    ag[5] = ["Months per year", { v: AWS.months, s: ST.input }, ""];
+    ag[6] = ["EBS gp3 — USD per GB-month", { v: AWS.gp3, s: ST.input },
+             { v: AWS.region + " list price. Includes 3,000 IOPS and 125 MB/s.", s: ST.sub }];
+    ag[7] = ["EBS sc1 (Cold HDD) — USD per GB-month", { v: AWS.sc1, s: ST.input },
+             { v: "Used for the nearline backup target only.", s: ST.sub }];
+    ag[8] = ["GB per TB", { v: AWS.gbPerTb, s: ST.input },
+             { v: "Binary TB, matching the calculator's volume figures.", s: ST.sub }];
+    // Rows 11–18: licence rates. The Database licences sheet reads B12 to B17 by cell, so these
+    // rows are fixed — enter a negotiated discount here and the whole workbook follows.
+    ag[10] = [{ v: "Database licence rates (list) — " + LICENCE.source, s: ST.bold }];
+    ag[11] = [(s.engine === "sqlserver" ? "Software Assurance" : "Support") + ", % of licence / yr",
+              { v: s.engine === "sqlserver" ? LICENCE.saPct : LICENCE.supportPct, s: ST.input },
+              { v: s.engine === "sqlserver"
+                  ? "Microsoft Software Assurance. Required to bring licences to AWS."
+                  : "Oracle Software Update Licence & Support.", s: ST.sub }];
+    ag[12] = ["Oracle Database Enterprise Edition, per processor",
+              { v: LICENCE.oracle.ee, s: ST.input },
+              { v: "Also $950 per Named User Plus, minimum 25 per processor.", s: ST.sub }];
+    ag[13] = ["Oracle Partitioning, per processor", { v: LICENCE.oracle.part, s: ST.input },
+              { v: "Required by the product's postings fact, and not included in Enterprise Edition.", s: ST.sub }];
+    ag[14] = ["Oracle Active Data Guard, per processor", { v: LICENCE.oracle.adg, s: ST.input },
+              { v: "What makes a standby readable. Licensed on both ends of the pair.", s: ST.sub }];
+    ag[15] = ["Oracle Database In-Memory, per processor", { v: LICENCE.oracle.imdb, s: ST.input },
+              { v: "Optional. Buying it removes the warehouse's 1.5x core and 1.8x storage penalty.", s: ST.sub }];
+    ag[16] = ["SQL Server 2022 Enterprise, per core", { v: LICENCE.sqlserver.perCore, s: ST.input },
+              { v: "$15,123 per two-core pack. Four-core minimum per instance.", s: ST.sub }];
+    ag[17] = ["On-premises x86 core factor", { v: LICENCE.coreFactor, s: ST.input },
+              { v: "Comparison only — Oracle does not allow it in an Authorized Cloud Environment.", s: ST.sub }];
+    var ar = 19;
+    ag[ar] = [{ v: "Sizing scenario priced", s: ST.bold }]; ar++;
+    var mm = model(s);
+    [
+      ["Provisioned users", fmt(s.users)],
+      ["Peak concurrency", s.conc + "% → " + fmt(mm.concurrent) + " concurrent users"],
+      ["Customers (client entities)", fmt(s.cust)],
+      ["Requests / active user / min", String(s.rpm)],
+      ["Read / write split", s.readpct + " / " + (100 - s.readpct) + " → " + fmt(mm.readRPS) +
+        " / " + fmt(mm.writeRPS) + " req/s"],
+      ["API p95 / drill / message", SLIDERS.api(s.api) + " / " + s.drill + " s / " + s.msg + " s"],
+      ["Cache hit rate", "> " + s.hit + "%"],
+      ["Postings per day / history", SLIDERS.post(s.post) + " / " + s.hist + " months → " +
+        r1(mm.rowsBn) + " bn rows held"],
+      ["Database engine", ENGINES[s.engine].db],
+      ["Availability", s.ha ? "Highly available" : "Pilot — single nodes, no failover"],
+      ["Deployment", s.opt === "k8s" ? "With Kubernetes" : "Without Kubernetes"],
+      ["Pod / node sizing", SLIDERS.podcpu(s.podcpu) + " CPU, " + SLIDERS.podmem(s.podmem) +
+        " memory per pod; " + s.nodecpu + " cores per application host"],
+      ["On-premises model serving", s.gpu ? "Yes — two GPU servers per site" : "No"],
+      ["Capability reused from the bank", REUSABLE.filter(function (x) { return s.has[x.k]; })
+        .map(function (x) { return x.label; }).join(", ") || "None — every tier is priced"],
+      ["Environments priced", cs.map(function (e) { return e.name; }).join(" · ")]
+    ].forEach(function (p) { ag[ar] = [p[0], "", { v: p[1], s: ST.base }]; ar++; });
+    ar++;
+    ag[ar] = [{ v: "Method", s: ST.bold }]; ar++;
+    [
+      "Lift and shift: each server in the sizing table becomes one EC2 instance of the same shape.",
+      "Instance choice is the cheapest current-generation ap-south-1 instance that meets both the " +
+      "core and the memory requirement.",
+      "All SSD and NVMe volumes are priced as EBS gp3 at the row's total volume size. The backup " +
+      "target, which the sizing marks nearline-acceptable, is priced as sc1.",
+      "Capability the bank already operates carries no AWS charge and is not listed, for the same " +
+      "reason it carries no server.",
+      "On-demand and 3-year Standard Reserved (no upfront, effective hourly) are both shown."
+    ].forEach(function (t) { ag[ar] = [{ v: "•  " + t, s: ST.note }]; ar++; });
+    sheets.push({ name: "Assumptions", grid: ag, widths: aw });
+
+    // ---- rate card
+    var rg = [], rwid = [20, 8, 12, 8, 20, 18, 20];
+    rg[0] = [{ v: "AWS " + AWS.region + " — EC2 Linux rate card", s: ST.title }];
+    rg[1] = [{ v: "On-demand and 3-year Standard Reserved (no upfront), shared tenancy. AWS price " +
+                  "list published " + AWS.published + ", retrieved " + AWS.priced + ". Every rate " +
+                  "verified against AWS's own published list. All Upfront is about 13% cheaper " +
+                  "again, so these reserved figures are the conservative end.", s: ST.sub }];
+    rg[3] = ["Instance type", "vCPU", "RAM (GiB)", "GPUs", "On-demand USD/hr", "3-yr RI USD/hr",
+             "On-demand INR/hr"].map(function (h) { return { v: h, s: ST.head }; });
+    AWS.catalog.forEach(function (c, i) {
+      var n = 5 + i;
+      rg[n - 1] = [c[0], { v: c[1], s: ST.num }, { v: c[2], s: ST.num }, { v: c[3], s: ST.num },
+        { v: c[4], s: ST.rate }, { v: c[5], s: ST.rate },
+        { v: c[4] * s.fx, s: ST.num2, f: "E" + n + "*" + FX }];
+    });
+    sheets.push({ name: "Rate card", grid: rg, widths: rwid });
+
+    return buildXlsx(sheets);
+  }
+
+  // ---- Controls ------------------------------------------------------------------------------
+  var SLIDERS = {
+    users: function (v) { return fmt(v); },
+    conc: function (v) { return v + "%"; },
+    cust: function (v) { return fmt(v); },
+    rpm: function (v) { return v; },
+    readpct: function (v) { return v + " / " + (100 - v); },
+    api: function (v) { return v >= 1000 ? (v / 1000) + " s" : v + " ms"; },
+    drill: function (v) { return v + " s"; },
+    msg: function (v) { return v + " s"; },
+    hit: function (v) { return "> " + v + "%"; },
+    podcpu: function (v) { return v + "m"; },
+    podmem: function (v) { return v >= 1024 ? (v / 1024) + " GiB" : v + " MiB"; },
+    nodecpu: function (v) { return v + " cores"; },
+    post: function (v) { return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M"; },
+    hist: function (v) { return v + " months"; }
+  };
+  Object.keys(SLIDERS).forEach(function (k) {
+    var el = document.getElementById(k);
+    el.addEventListener("input", function () {
+      state[k] = Number(el.value);
+      syncLabels();
+      render();
+    });
+  });
+
+  function syncLabels() {
+    Object.keys(SLIDERS).forEach(function (k) {
+      document.getElementById(k).value = state[k];
+      document.getElementById(k + "-v").textContent = SLIDERS[k](state[k]);
+    });
+    document.getElementById("conc-hint").textContent =
+      Math.round(state.users * state.conc / 100).toLocaleString("en-US") + " users active at peak";
+    var mm = model(state);
+    document.getElementById("api-hint").textContent =
+      "Autoscaler holds " + Math.round(mm.utilTarget * 100) + "% CPU · " + mm.podRPS +
+      " req/s per pod. " + effectOf("api");
+    document.getElementById("hit-hint").textContent =
+      mm.dbReadRPS.toLocaleString("en-US") + " req/s reach the warehouse. " + effectOf("hit");
+    document.getElementById("drill-hint").textContent = effectOf("drill");
+    document.getElementById("msg-hint").textContent = effectOf("msg");
+    document.getElementById("podcpu-hint").textContent =
+      "Never profiled — the softest number here. Peak " + Math.round(mm.peakCores) +
+      " cores, burst ceiling " + Math.round(mm.ceilCores) + " cores";
+    var pool = mm.nodesDC * mm.nodeCpu, spare = (mm.nodesDC - 1) * (mm.nodeCpu - 2);
+    document.getElementById("nodecpu-hint").textContent =
+      mm.nodesDC + " hosts × " + mm.nodeCpu + " = " + pool + " cores in production. " +
+      (spare >= mm.ceilCores ? "Holds the burst ceiling with one host down"
+        : spare >= mm.peakCores ? "Holds expected peak with one host down, not the burst ceiling"
+        : "WARNING: one host down drops below expected peak");
+    document.getElementById("opt-hint").textContent = state.opt === "k8s"
+      ? "Ships today: Helm chart and container images, linted and rendered in CI."
+      : "Needs deployment automation the product does not contain today — process supervision, config delivery, service discovery and rolling release.";
+    document.getElementById("opt-k8s").setAttribute("aria-pressed", state.opt === "k8s");
+    document.getElementById("opt-vm").setAttribute("aria-pressed", state.opt === "vm");
+    document.querySelectorAll("#engine-seg button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.dataset.engine === state.engine);
+    });
+    document.querySelectorAll("#ha-seg button").forEach(function (b) {
+      b.setAttribute("aria-pressed", (b.dataset.ha === "1") === state.ha);
+    });
+    document.querySelectorAll("#licopt-seg button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.dataset.licopt === state.licopt);
+    });
+    document.getElementById("licopt-hint").textContent = state.licopt === "hold"
+      ? "Cheapest shape holding at least " + Math.round(CORE_HOLD * 100) + "% of the cores. " +
+        "Licensed engines only — it is the licence that makes a spare vCPU expensive."
+      : state.licopt === "min"
+      ? "Cheapest three-year node that holds the memory. Gives up much of the core count — " +
+        "a load test has to settle whether that still carries the drill budget."
+      : "Database instances sized to meet the core count.";
+    document.getElementById("ha-hint").textContent = state.ha
+      ? "Paired databases, quorum tiers, three application hosts minimum."
+      : "Single nodes throughout. No failover, no readable standby, and the warehouse primary serves the read path. Not a production deployment.";
+    var E = ENGINES[state.engine];
+    document.getElementById("engine-hint").textContent = E.support + ". " +
+      (E.columnar ? "Columnar store included."
+        : "No columnar store, so the warehouse carries " + E.whCpu + "x the cores and " + E.whStore + "x the storage — both estimates, not benchmarks.");
+    // Drive the checkboxes from state too, so the markup's own attributes never decide
+    // what a variant of this file opens with.
+    ["uat", "dc", "dr"].forEach(function (k) {
+      var el = document.getElementById("env-" + k);
+      el.checked = state.envs[k];
+      el.closest("label").classList.toggle("on", state.envs[k]);
+    });
+    ["uatperf", "gpu"].forEach(function (k) {
+      var el = document.getElementById(k);
+      el.checked = state[k];
+      el.closest("label").classList.toggle("on", state[k]);
+    });
+    document.getElementById("fx").value = state.fx;
+    document.getElementById("fx-v").textContent = fmt(state.fx);
+    buildReuse();
+  }
+
+  document.querySelectorAll("#engine-seg button").forEach(function (b) {
+    b.addEventListener("click", function () { state.engine = b.dataset.engine; syncLabels(); render(); });
+  });
+
+  document.querySelectorAll("#ha-seg button").forEach(function (b) {
+    b.addEventListener("click", function () { state.ha = b.dataset.ha === "1"; syncLabels(); render(); });
+  });
+
+  document.querySelectorAll("#licopt-seg button").forEach(function (b) {
+    b.addEventListener("click", function () { state.licopt = b.dataset.licopt; syncLabels(); render(); });
+  });
+
+  document.getElementById("opt-k8s").addEventListener("click", function () { state.opt = "k8s"; syncLabels(); render(); });
+  document.getElementById("opt-vm").addEventListener("click", function () { state.opt = "vm"; syncLabels(); render(); });
+
+  ["uat", "dc", "dr"].forEach(function (k) {
+    var el = document.getElementById("env-" + k);
+    el.addEventListener("change", function () {
+      state.envs[k] = el.checked;
+      el.closest("label").classList.toggle("on", el.checked);
+      render();
+    });
+  });
+  ["uatperf", "gpu"].forEach(function (k) {
+    var el = document.getElementById(k);
+    el.addEventListener("change", function () {
+      state[k] = el.checked;
+      el.closest("label").classList.toggle("on", el.checked);
+      render();
+    });
+  });
+
+  function buildReuse() {
+    var box = document.getElementById("reuse-box"), html = "";
+    REUSABLE.forEach(function (r) {
+      if (r.only && r.only !== state.opt) return;
+      html += '<label' + (state.has[r.k] ? ' class="on"' : "") + '><input type="checkbox" data-reuse="' +
+        r.k + '"' + (state.has[r.k] ? " checked" : "") + '><span class="tx">' + esc(r.label) + "</span></label>";
+    });
+    box.innerHTML = html;
+    applyTooltips();
+    box.querySelectorAll("input[data-reuse]").forEach(function (el) {
+      el.addEventListener("change", function () {
+        state.has[el.dataset.reuse] = el.checked;
+        el.closest("label").classList.toggle("on", el.checked);
+        render();
+      });
+    });
+  }
+
+  document.getElementById("reset").addEventListener("click", function () {
+    loadScenario();
+    ["uatperf", "gpu"].forEach(function (k) {
+      var el = document.getElementById(k);
+      el.checked = state[k];
+      el.closest("label").classList.toggle("on", state[k]);
+    });
+    ["uat", "dc", "dr"].forEach(function (k) {
+      var el = document.getElementById("env-" + k);
+      el.checked = state.envs[k];
+      el.closest("label").classList.toggle("on", state.envs[k]);
+    });
+    syncLabels(); render();
+  });
+
+  document.getElementById("copy-csv").addEventListener("click", function () {
+    var btn = this;
+    var csv = (window.__csv || []).map(function (r) {
+      return r.map(function (c) {
+        c = String(c == null ? "" : c);
+        return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c;
+      }).join(",");
+    }).join("\n");
+    var done = function (msg) { btn.textContent = msg; setTimeout(function () { btn.textContent = "Copy all tables as CSV"; }, 1800); };
+    try {
+      navigator.clipboard.writeText(csv).then(function () { done("Copied — paste into a spreadsheet"); },
+        function () { done("Could not copy — select the tables instead"); });
+    } catch (e) { done("Could not copy — select the tables instead"); }
+  });
+
+  // Exchange rate. Sizing is untouched by it, so only the cost table needs redrawing — but
+  // render() is cheap and keeping one path avoids the two drifting apart.
+  document.getElementById("fx").addEventListener("input", function () {
+    var v = Number(this.value);
+    if (!isFinite(v) || v <= 0) { return; }
+    state.fx = v;
+    document.getElementById("fx-v").textContent = fmt(v);
+    render();
+  });
+
+  document.getElementById("export-xlsx").addEventListener("click", function () {
+    var btn = this, label = "Download AWS India cost (Excel)";
+    var done = function (msg) { btn.textContent = msg; setTimeout(function () { btn.textContent = label; }, 2200); };
+    if (!(window.__cost || []).length) { done("Select an environment first"); return; }
+    try {
+      var bytes = costWorkbook();
+      var blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "RM-Platform-AWS-India-cost-" + fmt(state.users).replace(/,/g, "") + "u-" +
+        state.conc + "pc-" + state.engine + ".xlsx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      done("Downloaded");
+    } catch (e) {
+      done("Could not build the file");
+      if (window.console) { console.error(e); }
+    }
+  });
+
+  syncLabels();
+  render();
+})();
+</script>
+
+
+
+</body></html>
